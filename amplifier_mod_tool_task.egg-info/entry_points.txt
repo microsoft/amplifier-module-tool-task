@@ -1,2 +1,0 @@
-[amplifier.modules]
-tool-task = amplifier_mod_tool_task:mount
