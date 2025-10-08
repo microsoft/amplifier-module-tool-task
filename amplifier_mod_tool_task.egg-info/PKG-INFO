@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: amplifier-mod-tool-task
+Version: 0.1.0
+Summary: Task delegation tool for Amplifier sub-agents
+License-File: LICENSE
+Requires-Dist: amplifier-core>=0.1.0
+Dynamic: license-file
