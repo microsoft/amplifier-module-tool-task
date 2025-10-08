@@ -1,7 +1,7 @@
 [project]
 name = "amplifier-module-tool-task"
 version = "0.1.0"
-description = "Task delegation tool for Amplifier sub-agents"
+description = "Reference tool module - Task delegation for Amplifier sub-agents"
 dependencies = [
     "amplifier-core>=0.1.0"
 ]
