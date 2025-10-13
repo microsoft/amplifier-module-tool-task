@@ -19,11 +19,26 @@ This is the MOST CRITICAL missing feature for autonomous coding capability. It a
 - **Agent Specialization**: Support for different agent types with tailored configurations
 - **Hook Integration**: Emits agent:spawn and agent:complete events
 
+## Prerequisites
+
+- **Python 3.11+**
+- **[UV](https://github.com/astral-sh/uv)** - Fast Python package manager
+
+### Installing UV
+
+```bash
+# macOS/Linux/WSL
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
 ## Installation
 
 ```bash
 cd amplifier-next/amplifier-module-tool-task
-pip install -e .
+uv pip install -e .
 ```
 
 ## Configuration

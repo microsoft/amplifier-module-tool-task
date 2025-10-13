@@ -2,9 +2,35 @@
 name = "amplifier-module-tool-task"
 version = "0.1.0"
 description = "Reference tool module - Task delegation for Amplifier sub-agents"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Microsoft MADE:Explorations Team" },
+]
 dependencies = [
-    "amplifier-core>=0.1.0"
+    "amplifier-core",
 ]
 
 [project.entry-points."amplifier.modules"]
-tool-task = "amplifier_mod_tool_task:mount"
+tool-task = "amplifier_module_tool_task:mount"
+
+[build-system]
+requires = [
+    "hatchling",
+]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[tool.uv.sources.amplifier-core]
+path = "../amplifier-core"
+editable = true
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "amplifier_module_tool_task",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
