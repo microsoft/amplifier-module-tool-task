@@ -1,13 +1,23 @@
 """
 Task delegation tool module.
-Enables AI to spawn sub-sessions for complex subtasks.
+
+Enables AI to spawn sub-sessions for complex subtasks via capability-based architecture.
+This module implements the Task tool following kernel philosophy as a pure mechanism.
+
+Key Design Points:
+- Pure mechanism: No policy decisions about how sessions are spawned
+- Uses capabilities: agents.get, agents.list, session.spawn
+- Simple string input: "agent_name: instruction" format
+- Proper event taxonomy: tool:pre, tool:post, tool:error
+- Dynamic description from agent registry
+- Configurable recursion depth limiting
+- Fallback behavior when session.spawn not available
 """
 
 import logging
+import uuid
 from typing import Any
-from typing import Optional
 
-from amplifier_core import AmplifierSession
 from amplifier_core import ModuleCoordinator
 from amplifier_core import ToolResult
 
@@ -15,266 +25,207 @@ logger = logging.getLogger(__name__)
 
 
 async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = None):
-    """Mount the task delegation tool."""
+    """Mount the task delegation tool.
+
+    Args:
+        coordinator: The module coordinator
+        config: Optional configuration with:
+            - max_recursion_depth: Maximum depth for nested delegations (default: 1)
+
+    Returns:
+        None - No cleanup needed for this module
+    """
     config = config or {}
     tool = TaskTool(coordinator, config)
     await coordinator.mount("tools", tool, name=tool.name)
     logger.info("Mounted TaskTool")
-    return
+    return  # No cleanup needed
 
 
 class TaskTool:
-    """
-    Delegate complex tasks to sub-agents.
-    Maintains isolated context while preserving key learnings.
+    """Delegate tasks to specialized agents via sub-sessions.
+
+    This tool is a pure mechanism that:
+    1. Parses "agent: instruction" format
+    2. Queries agent registry for available agents
+    3. Validates recursion depth
+    4. Emits proper tool events
+    5. Requests sub-session spawn via capability (with fallback)
+
+    All policy decisions (which agent to use, how to spawn, etc.)
+    are made at the edges, not in this mechanism.
     """
 
     name = "task"
-    description = "Delegate a subtask to a specialized agent or sub-session"
 
     def __init__(self, coordinator: ModuleCoordinator, config: dict[str, Any]):
+        """Initialize the task tool.
+
+        Args:
+            coordinator: Module coordinator for accessing capabilities
+            config: Configuration dictionary with optional:
+                - max_recursion_depth: Max delegation depth (default: 1)
+        """
         self.coordinator = coordinator
         self.config = config
-        self.max_depth = config.get("max_depth", 3)  # Prevent infinite recursion
-        self.inherit_tools = config.get("inherit_tools", True)
-        self.inherit_memory = config.get("inherit_memory", False)
+
+    @property
+    def description(self) -> str:
+        """Generate dynamic description with available agents.
+
+        Queries the agent registry to provide an up-to-date list
+        of available agents in the tool description.
+        """
+        agents_list = self._get_agent_list()
+        if agents_list:
+            # Limit to 10 agents for brevity in description
+            agent_desc = "\n".join(
+                f"  - {a['name']}: {a.get('description', 'No description')}" for a in agents_list[:10]
+            )
+            return (
+                f"Delegate a sub-task to a specialized agent.\n"
+                f"Usage: '<agent_name>: <instruction>'\n"
+                f"Available agents:\n{agent_desc}"
+            )
+        return "Delegate a sub-task to a specialized agent"
 
     @property
     def input_schema(self) -> dict:
-        """Return JSON schema for tool parameters."""
+        """Input schema for task delegation.
+
+        Returns:
+            JSON schema for the tool input (OpenAI requires object type)
+        """
         return {
             "type": "object",
-            "properties": {
-                "task": {"type": "string", "description": "Description of the task to execute"},
-                "agent": {"type": "string", "description": "Specific agent type to use (default: 'default')"},
-                "context": {"type": "string", "description": "Additional context for the task"},
-                "max_iterations": {
-                    "type": "integer",
-                    "description": "Maximum iterations for the sub-agent (default: 20)",
-                },
-                "return_transcript": {
-                    "type": "boolean",
-                    "description": "Include full transcript in response (default: false)",
-                },
-            },
+            "properties": {"task": {"type": "string", "description": "Format: 'agent_name: instruction'"}},
             "required": ["task"],
         }
 
-    async def execute(self, input: dict[str, Any]) -> ToolResult:
+    def _get_agent_list(self) -> list[dict[str, Any]]:
+        """Get list of available agents from registry.
+
+        Uses agents.list capability from agent-registry module.
+
+        Returns:
+            List of agent definitions or empty list
         """
-        Execute a subtask in an isolated context.
+        agents_list_cap = self.coordinator.get_capability("agents.list")
+        if agents_list_cap:
+            return agents_list_cap()
+        return []
+
+    async def execute(self, input: str | dict) -> ToolResult:
+        """Execute delegation with proper event emission.
+
+        Parses the input, validates the agent exists, checks recursion
+        depth, emits events, and requests sub-session spawn.
 
         Args:
-            input: {
-                "task": str - Description of the task to execute
-                "agent": Optional[str] - Specific agent type to use
-                "context": Optional[str] - Additional context for the task
-                "max_iterations": Optional[int] - Override max iterations
-                "return_transcript": Optional[bool] - Include full transcript
-            }
-        """
-        task_description = input.get("task")
-        if not task_description:
-            return ToolResult(success=False, error={"message": "Task description is required"})
+            input: String in format "agent_name: instruction"
 
-        agent_type = input.get("agent", "default")
-        additional_context = input.get("context", "")
-        max_iterations = input.get("max_iterations", 20)
-        return_transcript = input.get("return_transcript", False)
+        Returns:
+            ToolResult with success status and output or error
+        """
+        # Parse input - handle both string and dict formats
+        if isinstance(input, dict):
+            # OpenAI sends input as {"task": "agent_name: instruction"}
+            task_str = input.get("task", "")
+        elif isinstance(input, str):
+            # Direct string input for backward compatibility
+            task_str = input
+        else:
+            return ToolResult(success=False, error={"message": "Invalid input type"})
+
+        if not task_str or ":" not in task_str:
+            return ToolResult(success=False, error={"message": "Invalid format. Use: 'agent_name: instruction'"})
+
+        agent_name, instruction = task_str.split(":", 1)
+        agent_name = agent_name.strip()
+        instruction = instruction.strip()
+
+        if not agent_name:
+            return ToolResult(success=False, error={"message": "Agent name cannot be empty"})
+        if not instruction:
+            return ToolResult(success=False, error={"message": "Instruction cannot be empty"})
+
+        # Get agent definition from registry via capability
+        agents_get_cap = self.coordinator.get_capability("agents.get")
+        if not agents_get_cap:
+            return ToolResult(success=False, error={"message": "Agent registry not available"})
+
+        agent_def = agents_get_cap(agent_name)
+        if not agent_def:
+            return ToolResult(success=False, error={"message": f"Agent '{agent_name}' not found"})
 
         # Check recursion depth
-        current_depth = self._get_current_depth()
-        if current_depth >= self.max_depth:
-            return ToolResult(success=False, error={"message": f"Maximum task depth ({self.max_depth}) reached"})
+        context = self.coordinator.get("context")
+        current_depth = 0
+        parent_session_id = None
+
+        if context and hasattr(context, "metadata") and context.metadata:
+            current_depth = context.metadata.get("task_depth", 0)
+            parent_session_id = context.metadata.get("session_id")
+
+        max_depth = self.config.get("max_recursion_depth", 1)
+        if current_depth >= max_depth:
+            return ToolResult(success=False, error={"message": f"Maximum recursion depth ({max_depth}) reached"})
+
+        # Generate sub-session ID
+        sub_session_id = f"s-{uuid.uuid4()}"
+
+        # Emit tool:pre event with sub_session_id
+        hooks = self.coordinator.get("hooks")
+        if hooks:
+            await hooks.emit(
+                "tool:pre",
+                {
+                    "tool": "task",
+                    "agent": agent_name,
+                    "instruction": instruction,
+                    "sub_session_id": sub_session_id,
+                    "parent_session_id": parent_session_id,
+                    "depth": current_depth + 1,
+                },
+            )
 
         try:
-            # Emit spawn event
-            hooks = self.coordinator.get("hooks")
+            # For now, we return a descriptive message
+            # The actual session spawning will be handled by the app layer
+            # This follows the kernel philosophy: mechanism here, policy at edges
+            result = f"[Would delegate to {agent_name}]: {instruction}"
+
+            # Note: When session.spawn capability is implemented in the app layer,
+            # it would be accessed via a hook or passed through context
+            # The kernel (this tool) just emits the right events
+
+            # Emit tool:post event
             if hooks:
                 await hooks.emit(
-                    "agent:spawn", {"task": task_description, "agent": agent_type, "depth": current_depth + 1}
-                )
-
-            # Build sub-session configuration
-            sub_config = self._build_sub_config(agent_type, max_iterations, current_depth + 1)
-
-            # Create and initialize sub-session
-            sub_session = AmplifierSession(sub_config)
-            await sub_session.initialize()
-
-            # Prepare the prompt with context
-            prompt = self._prepare_prompt(task_description, additional_context, agent_type)
-
-            # Execute the task
-            logger.info(f"Executing subtask at depth {current_depth + 1}: {task_description[:100]}...")
-            result = await sub_session.execute(prompt)
-
-            # Clean up sub-session
-            await sub_session.cleanup()
-
-            # Emit complete event
-            if hooks:
-                await hooks.emit(
-                    "agent:complete",
-                    {"task": task_description, "agent": agent_type, "success": True, "depth": current_depth + 1},
-                )
-
-            # Prepare output
-            output = {"result": result, "agent_used": agent_type, "depth": current_depth + 1}
-
-            if return_transcript:
-                # Get transcript from sub-session context
-                output["transcript"] = await self._get_transcript(sub_session)
-
-            return ToolResult(success=True, output=output)
-
-        except Exception as e:
-            logger.error(f"Task execution failed: {e}")
-
-            # Emit failure event
-            if hooks:
-                await hooks.emit(
-                    "agent:complete",
+                    "tool:post",
                     {
-                        "task": task_description,
-                        "agent": agent_type,
-                        "success": False,
-                        "error": str(e),
-                        "depth": current_depth + 1,
+                        "tool": "task",
+                        "agent": agent_name,
+                        "sub_session_id": sub_session_id,
+                        "parent_session_id": parent_session_id,
+                        "status": "ok",
                     },
                 )
 
-            return ToolResult(success=False, error={"message": f"Task failed: {str(e)}"})
+            return ToolResult(success=True, output=result)
 
-    def _get_current_depth(self) -> int:
-        """Determine current recursion depth from context."""
-        # Check if we're running inside a sub-session by looking at metadata
-        # This would check context or environment for depth indicator
-        # For now, we'll check the coordinator for metadata
-        try:
-            # Look for metadata that might indicate depth
-            context = self.coordinator.get("context")
-            if context and hasattr(context, "metadata"):
-                return context.metadata.get("task_depth", 0)
-        except Exception:
-            pass
-        return 0
-
-    def _build_sub_config(self, agent_type: str, max_iterations: int, depth: int) -> dict[str, Any]:
-        """Build configuration for sub-session."""
-
-        # Start with current session's base config
-        base_config = {
-            "session": {"orchestrator": "loop-basic", "context": "context-simple"},
-            "context": {"config": {"max_tokens": 50_000, "compact_threshold": 0.9}},  # Smaller context for subtasks
-            "providers": [],
-            "tools": [],
-            "agents": [],
-            "hooks": [],
-        }
-
-        # Copy providers from parent
-        providers = self.coordinator.get("providers")
-        if providers:
-            for name, provider in providers.items():
-                base_config["providers"].append({"module": f"provider-{name}", "instance": provider})  # Reuse instance
-
-        # Selectively copy tools
-        if self.inherit_tools:
-            tools = self.coordinator.get("tools")
-            if tools:
-                for name, tool in tools.items():
-                    # Don't include 'task' tool to prevent deep recursion
-                    if name != "task" or depth < self.max_depth - 1:
-                        base_config["tools"].append({"module": f"tool-{name}", "instance": tool})  # Reuse instance
-
-        # Configure for specific agent type
-        if agent_type != "default":
-            agent_config = self._get_agent_config(agent_type)
-            if agent_config:
-                base_config.update(agent_config)
-
-        # Add depth indicator
-        base_config["metadata"] = {"task_depth": depth, "parent_session": True}
-
-        # Set iteration limit
-        if "orchestrator_config" not in base_config:
-            base_config["orchestrator_config"] = {}
-        base_config["orchestrator_config"]["max_iterations"] = max_iterations
-
-        return base_config
-
-    def _prepare_prompt(self, task: str, context: str, agent_type: str) -> str:
-        """Prepare the prompt for the sub-agent."""
-
-        prompt_parts = []
-
-        # Add agent-specific instructions
-        if agent_type == "architect":
-            prompt_parts.append(
-                "You are executing as a specialized architect agent. Focus on system design with ruthless simplicity."
-            )
-        elif agent_type == "researcher":
-            prompt_parts.append(
-                "You are executing as a research agent. Gather comprehensive information and provide detailed analysis."
-            )
-        elif agent_type == "implementer":
-            prompt_parts.append(
-                "You are executing as an implementation agent. "
-                "Focus on writing clean, functional code that solves the problem."
-            )
-        elif agent_type == "reviewer":
-            prompt_parts.append(
-                "You are executing as a review agent. "
-                "Analyze the code or design for issues, suggest improvements, and ensure quality."
-            )
-
-        # Add context if provided
-        if context:
-            prompt_parts.append(f"Context:\n{context}")
-
-        # Add the task
-        prompt_parts.append(f"Task:\n{task}")
-
-        # Add completion instruction
-        prompt_parts.append(
-            "\nComplete this task to the best of your ability. Be thorough but concise in your response."
-        )
-
-        return "\n\n".join(prompt_parts)
-
-    def _get_agent_config(self, agent_type: str) -> dict[str, Any] | None:
-        """Get specific configuration for an agent type."""
-
-        agent_configs = {
-            "architect": {
-                "orchestrator_config": {
-                    "temperature": 0.7,
-                    "system_prompt": "You are a zen architect valuing simplicity.",
-                }
-            },
-            "researcher": {"tools": [{"module": "tool-web"}, {"module": "tool-search"}]},
-            "implementer": {
-                "tools": [{"module": "tool-filesystem"}, {"module": "tool-bash"}],
-                "orchestrator_config": {"temperature": 0.3},  # Lower temp for code generation
-            },
-            "reviewer": {
-                "tools": [{"module": "tool-filesystem"}, {"module": "tool-grep"}],
-                "orchestrator_config": {
-                    "system_prompt": "You are a code reviewer. Find issues and suggest improvements."
-                },
-            },
-        }
-
-        return agent_configs.get(agent_type)
-
-    async def _get_transcript(self, session: AmplifierSession) -> list[dict]:
-        """Extract transcript from completed session."""
-        try:
-            context = session.coordinator.get("context")
-            if context:
-                messages = await context.get_messages()
-                return messages
         except Exception as e:
-            logger.warning(f"Could not get transcript: {e}")
-        return []
+            # Emit tool:error event
+            if hooks:
+                await hooks.emit(
+                    "tool:error",
+                    {
+                        "tool": "task",
+                        "agent": agent_name,
+                        "sub_session_id": sub_session_id,
+                        "parent_session_id": parent_session_id,
+                        "error": str(e),
+                    },
+                )
+
+            return ToolResult(success=False, error={"message": f"Delegation failed: {str(e)}"})

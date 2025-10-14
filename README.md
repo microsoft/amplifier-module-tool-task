@@ -12,12 +12,12 @@ This is the MOST CRITICAL missing feature for autonomous coding capability. It a
 
 ## Features
 
-- **Recursive Session Spawning**: Create isolated AmplifierSession instances for subtasks
-- **Context Isolation**: Each subtask runs in its own context window (50K tokens)
-- **Depth Limiting**: Prevents infinite recursion (configurable, default max_depth=3)
-- **Tool Inheritance**: Sub-sessions can inherit parent tools (optional)
-- **Agent Specialization**: Support for different agent types with tailored configurations
-- **Hook Integration**: Emits agent:spawn and agent:complete events
+- **Simple String Interface**: Uses "agent: instruction" format for ease of use
+- **Dynamic Agent Discovery**: Queries available agents from registry
+- **Depth Limiting**: Prevents infinite recursion (configurable max_depth)
+- **Proper Event Emission**: Emits tool:pre, tool:post, tool:error with sub_session_id
+- **Parent/Child Linking**: Tracks session relationships via IDs
+- **Kernel Philosophy Compliance**: Pure mechanism, no policy decisions
 
 ## Prerequisites
 
@@ -49,69 +49,46 @@ Add to your Amplifier config:
 [[tools]]
 module = "tool-task"
 config = {
-    max_depth = 3,           # Maximum recursion depth
-    inherit_tools = true,    # Sub-sessions inherit parent tools
-    inherit_memory = false   # Sub-sessions don't inherit memory (not implemented)
+    max_recursion_depth = 1  # Maximum recursion depth (default: 1)
 }
 ```
 
 ## Usage
 
-The tool is automatically available to AI agents once mounted. The AI can use it like:
+The tool is automatically available to AI agents once mounted. The AI uses a simple string format:
 
-```python
-# Delegate a complex analysis task
-result = await task_tool.execute({
-    "task": "Analyze the authentication system architecture",
-    "agent": "architect",
-    "context": "Focus on security and simplicity",
-    "max_iterations": 15,
-    "return_transcript": False
-})
-
-# Delegate research task
-result = await task_tool.execute({
-    "task": "Research best practices for JWT token management",
-    "agent": "researcher"
-})
-
-# Delegate implementation task
-result = await task_tool.execute({
-    "task": "Implement the user registration endpoint",
-    "agent": "implementer",
-    "context": "Use existing auth utilities"
-})
-
-# Delegate code review
-result = await task_tool.execute({
-    "task": "Review the recent changes for security issues",
-    "agent": "reviewer"
-})
+```
+agent_name: instruction
 ```
 
-## Input Parameters
+Examples:
+- `architect: Analyze the authentication system architecture`
+- `researcher: Research best practices for JWT token management`
+- `implementer: Implement the user registration endpoint`
+- `reviewer: Review the recent changes for security issues`
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| task | string | Yes | Description of the subtask to execute |
-| agent | string | No | Agent type: default, architect, researcher, implementer, reviewer |
-| context | string | No | Additional context for the task |
-| max_iterations | integer | No | Override max iterations (default 20) |
-| return_transcript | boolean | No | Include full conversation transcript (default False) |
+## Input Format
+
+The tool accepts a single string input in the format:
+```
+agent_name: instruction
+```
+
+Where:
+- `agent_name`: The name of the agent to delegate to (must exist in agent registry)
+- `instruction`: The task or question for the agent to handle
 
 ## Output Format
 
+On success:
 ```json
 {
     "success": true,
-    "output": {
-        "result": "The analysis shows that...",
-        "agent_used": "architect",
-        "depth": 1,
-        "transcript": [...]  // Only if return_transcript=true
-    }
+    "output": "[Would delegate to agent_name]: instruction"
 }
 ```
+
+Note: The actual sub-session spawning is handled by the app layer. This tool provides the mechanism (event emission, validation) while the policy (how to spawn sessions) lives at the edges.
 
 ## Agent Types
 
@@ -149,42 +126,58 @@ All errors are logged and returned with descriptive messages.
 
 ## Hook Events
 
-The tool emits two types of events:
+The tool emits standard kernel events:
 
-### agent:spawn
-Emitted before executing a subtask:
+### tool:pre
+Emitted before delegation attempt:
 ```json
 {
-    "task": "task description",
-    "agent": "agent_type",
+    "tool": "task",
+    "agent": "agent_name",
+    "instruction": "instruction text",
+    "sub_session_id": "s-uuid",
+    "parent_session_id": "parent-id",
     "depth": 1
 }
 ```
 
-### agent:complete
-Emitted after task completion (success or failure):
+### tool:post
+Emitted after successful delegation:
 ```json
 {
-    "task": "task description",
-    "agent": "agent_type",
-    "success": true,
-    "depth": 1,
-    "error": "error message"  // Only on failure
+    "tool": "task",
+    "agent": "agent_name",
+    "sub_session_id": "s-uuid",
+    "parent_session_id": "parent-id",
+    "status": "ok"
+}
+```
+
+### tool:error
+Emitted on delegation failure:
+```json
+{
+    "tool": "task",
+    "agent": "agent_name",
+    "sub_session_id": "s-uuid",
+    "parent_session_id": "parent-id",
+    "error": "error message"
 }
 ```
 
 ## Philosophy
 
-This tool follows the "Ruthless Simplicity" principle:
-- Synchronous execution (no complex scheduling)
-- Direct use of AmplifierSession
-- Clear, meaningful error messages
-- Fail-fast validation
+This tool follows kernel philosophy principles:
+- **Mechanism, not policy**: Provides delegation mechanism, app layer decides how to spawn
+- **Simple interfaces**: Single string input "agent: instruction"
+- **Event-first**: Emits proper kernel events for observability
+- **Clean boundaries**: No direct session creation, uses mount points and capabilities
+- **Fail-fast validation**: Clear, meaningful error messages
 
 ## Future Enhancements
 
+- Full session.spawn capability implementation in app layer
 - Memory inheritance between sessions
-- Custom agent type definitions
 - Task result caching
 - Parallel task execution
 - Advanced context management
