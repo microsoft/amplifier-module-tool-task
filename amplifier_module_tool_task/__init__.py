@@ -155,8 +155,8 @@ class TaskTool:
         if agent_name not in agents:
             return ToolResult(success=False, error={"message": f"Agent '{agent_name}' not found"})
 
-        # Check recursion depth (simplified for now - full impl would track depth in metadata)
-        max_depth = self.config.get("max_recursion_depth", 1)
+        # Note: Recursion depth limiting not yet implemented
+        # Future: Track depth in metadata and check against config.max_recursion_depth
 
         # Get parent session ID from coordinator infrastructure
         parent_session_id = self.coordinator.session_id
@@ -207,7 +207,11 @@ class TaskTool:
                     },
                 )
 
-            return ToolResult(success=True, output=result["output"], metadata={"session_id": result["session_id"]})
+            # Return output with session_id for multi-turn capability
+            return ToolResult(
+                success=True,
+                output={"response": result["output"], "session_id": result["session_id"]},
+            )
 
         except Exception as e:
             # Emit tool:error event
