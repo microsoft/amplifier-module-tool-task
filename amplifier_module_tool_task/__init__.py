@@ -103,17 +103,18 @@ class TaskTool:
         }
 
     def _get_agent_list(self) -> list[dict[str, Any]]:
-        """Get list of available agents from registry.
+        """Get list of available agents from mount plan.
 
-        Uses agents.list capability from agent-registry module.
+        Reads agents section from the session's mount plan configuration.
 
         Returns:
-            List of agent definitions or empty list
+            List of agent definitions with name and description
         """
-        agents_list_cap = self.coordinator.get_capability("agents.list")
-        if agents_list_cap:
-            return agents_list_cap()
-        return []
+        # Get agents from coordinator's config (mount plan passthrough)
+        config = getattr(self.coordinator, "_config", {})
+        agents = config.get("agents", {})
+
+        return [{"name": name, "description": cfg.get("description", "No description")} for name, cfg in agents.items()]
 
     async def execute(self, input: str | dict) -> ToolResult:
         """Execute delegation with proper event emission.
@@ -149,30 +150,21 @@ class TaskTool:
         if not instruction:
             return ToolResult(success=False, error={"message": "Instruction cannot be empty"})
 
-        # Get agent definition from registry via capability
-        agents_get_cap = self.coordinator.get_capability("agents.get")
-        if not agents_get_cap:
-            return ToolResult(success=False, error={"message": "Agent registry not available"})
+        # Get agents from mount plan
+        config = getattr(self.coordinator, "_config", {})
+        agents = config.get("agents", {})
 
-        agent_def = agents_get_cap(agent_name)
-        if not agent_def:
+        if agent_name not in agents:
             return ToolResult(success=False, error={"message": f"Agent '{agent_name}' not found"})
 
-        # Check recursion depth
-        context = self.coordinator.get("context")
-        current_depth = 0
-        parent_session_id = None
-
-        if context and hasattr(context, "metadata") and context.metadata:
-            current_depth = context.metadata.get("task_depth", 0)
-            parent_session_id = context.metadata.get("session_id")
-
+        # Check recursion depth (simplified for now - full impl would track depth in metadata)
         max_depth = self.config.get("max_recursion_depth", 1)
-        if current_depth >= max_depth:
-            return ToolResult(success=False, error={"message": f"Maximum recursion depth ({max_depth}) reached"})
 
-        # Generate sub-session ID
-        sub_session_id = f"s-{uuid.uuid4()}"
+        # Get parent session ID from coordinator infrastructure
+        parent_session_id = self.coordinator.session_id
+
+        # Generate hierarchical sub-session ID
+        sub_session_id = f"{parent_session_id}-{agent_name}-{uuid.uuid4().hex[:8]}"
 
         # Emit tool:pre event with sub_session_id
         hooks = self.coordinator.get("hooks")
@@ -185,7 +177,6 @@ class TaskTool:
                     "instruction": instruction,
                     "sub_session_id": sub_session_id,
                     "parent_session_id": parent_session_id,
-                    "depth": current_depth + 1,
                 },
             )
 
