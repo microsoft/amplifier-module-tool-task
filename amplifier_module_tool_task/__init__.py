@@ -110,9 +110,8 @@ class TaskTool:
         Returns:
             List of agent definitions with name and description
         """
-        # Get agents from coordinator's config (mount plan passthrough)
-        config = getattr(self.coordinator, "_config", {})
-        agents = config.get("agents", {})
+        # Get agents from coordinator's infrastructure config property
+        agents = self.coordinator.config.get("agents", {})
 
         return [{"name": name, "description": cfg.get("description", "No description")} for name, cfg in agents.items()]
 
@@ -150,9 +149,8 @@ class TaskTool:
         if not instruction:
             return ToolResult(success=False, error={"message": "Instruction cannot be empty"})
 
-        # Get agents from mount plan
-        config = getattr(self.coordinator, "_config", {})
-        agents = config.get("agents", {})
+        # Get agents from coordinator infrastructure
+        agents = self.coordinator.config.get("agents", {})
 
         if agent_name not in agents:
             return ToolResult(success=False, error={"message": f"Agent '{agent_name}' not found"})
@@ -181,14 +179,20 @@ class TaskTool:
             )
 
         try:
-            # For now, we return a descriptive message
-            # The actual session spawning will be handled by the app layer
-            # This follows the kernel philosophy: mechanism here, policy at edges
-            result = f"[Would delegate to {agent_name}]: {instruction}"
+            # Import spawn helper (app layer)
+            from amplifier_app_cli.session_spawner import spawn_sub_session
 
-            # Note: When session.spawn capability is implemented in the app layer,
-            # it would be accessed via a hook or passed through context
-            # The kernel (this tool) just emits the right events
+            # Get parent session from coordinator infrastructure
+            parent_session = self.coordinator.session
+
+            # Spawn sub-session with agent configuration overlay
+            result = await spawn_sub_session(
+                agent_name=agent_name,
+                instruction=instruction,
+                parent_session=parent_session,
+                agent_configs=agents,
+                sub_session_id=sub_session_id,
+            )
 
             # Emit tool:post event
             if hooks:
@@ -197,13 +201,13 @@ class TaskTool:
                     {
                         "tool": "task",
                         "agent": agent_name,
-                        "sub_session_id": sub_session_id,
+                        "sub_session_id": result["session_id"],
                         "parent_session_id": parent_session_id,
                         "status": "ok",
                     },
                 )
 
-            return ToolResult(success=True, output=result)
+            return ToolResult(success=True, output=result["output"], metadata={"session_id": result["session_id"]})
 
         except Exception as e:
             # Emit tool:error event
