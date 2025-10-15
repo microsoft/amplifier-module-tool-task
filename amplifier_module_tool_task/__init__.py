@@ -164,19 +164,8 @@ class TaskTool:
         # Generate hierarchical sub-session ID
         sub_session_id = f"{parent_session_id}-{agent_name}-{uuid.uuid4().hex[:8]}"
 
-        # Emit tool:pre event with sub_session_id
+        # Get hooks for error handling (orchestrator will emit tool:pre/post)
         hooks = self.coordinator.get("hooks")
-        if hooks:
-            await hooks.emit(
-                "tool:pre",
-                {
-                    "tool": "task",
-                    "agent": agent_name,
-                    "instruction": instruction,
-                    "sub_session_id": sub_session_id,
-                    "parent_session_id": parent_session_id,
-                },
-            )
 
         try:
             # Import spawn helper (app layer)
@@ -194,18 +183,8 @@ class TaskTool:
                 sub_session_id=sub_session_id,
             )
 
-            # Emit tool:post event
-            if hooks:
-                await hooks.emit(
-                    "tool:post",
-                    {
-                        "tool": "task",
-                        "agent": agent_name,
-                        "sub_session_id": result["session_id"],
-                        "parent_session_id": parent_session_id,
-                        "status": "ok",
-                    },
-                )
+            # Note: Orchestrator will emit tool:post with standard result field
+            # We don't emit here to avoid double display in UI
 
             # Return output with session_id for multi-turn capability
             return ToolResult(
