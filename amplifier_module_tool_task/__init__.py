@@ -115,6 +115,50 @@ class TaskTool:
 
         return [{"name": name, "description": cfg.get("description", "No description")} for name, cfg in agents.items()]
 
+    def _parse_agent_and_instruction(self, task_str: str, available_agents: dict) -> tuple[str, str]:
+        """
+        Parse task string to extract agent name and instruction.
+
+        Handles agent names containing colons (collection:agent format) by trying
+        longest-prefix matching against available agent names.
+
+        Args:
+            task_str: Input string in format "agent_name: instruction"
+            available_agents: Dict of available agent configs from mount plan
+
+        Returns:
+            Tuple of (agent_name, instruction)
+
+        Examples:
+            - Input: "zen-architect: design a cache"
+              → ("zen-architect", "design a cache")
+
+            - Input: "developer-expertise:modular-builder: implement auth module"
+              → ("developer-expertise:modular-builder", "implement auth module")
+        """
+        # Sort agent names by length (longest first) for greedy matching
+        # This ensures 'collection:agent' matches before 'collection' would
+        sorted_agent_names = sorted(available_agents.keys(), key=len, reverse=True)
+
+        # Try to match each available agent name as prefix
+        for agent_name in sorted_agent_names:
+            # Check if input starts with "agent_name: " (with colon and space)
+            prefix_with_colon = f"{agent_name}:"
+            if task_str.startswith(prefix_with_colon):
+                # Extract instruction after the agent name and colon
+                instruction = task_str[len(prefix_with_colon) :].strip()
+                if instruction:  # Must have non-empty instruction
+                    return agent_name, instruction
+
+        # Fallback: simple split (for backward compatibility or malformed input)
+        # This handles cases where agent name doesn't match any known agent
+        if ":" in task_str:
+            agent_name, instruction = task_str.split(":", 1)
+            return agent_name.strip(), instruction.strip()
+
+        # No colon found at all
+        return "", ""
+
     async def execute(self, input: str | dict) -> ToolResult:
         """Execute delegation with proper event emission.
 
@@ -140,17 +184,17 @@ class TaskTool:
         if not task_str or ":" not in task_str:
             return ToolResult(success=False, error={"message": "Invalid format. Use: 'agent_name: instruction'"})
 
-        agent_name, instruction = task_str.split(":", 1)
-        agent_name = agent_name.strip()
-        instruction = instruction.strip()
+        # Get agents from coordinator infrastructure (needed for smart parsing)
+        agents = self.coordinator.config.get("agents", {})
+
+        # Smart parsing: handle agent names with colons (collection:agent format)
+        # Try longest-prefix matching against available agent names
+        agent_name, instruction = self._parse_agent_and_instruction(task_str, agents)
 
         if not agent_name:
             return ToolResult(success=False, error={"message": "Agent name cannot be empty"})
         if not instruction:
             return ToolResult(success=False, error={"message": "Instruction cannot be empty"})
-
-        # Get agents from coordinator infrastructure
-        agents = self.coordinator.config.get("agents", {})
 
         if agent_name not in agents:
             return ToolResult(success=False, error={"message": f"Agent '{agent_name}' not found"})
