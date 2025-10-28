@@ -12,7 +12,7 @@ This is the MOST CRITICAL missing feature for autonomous coding capability. It a
 
 ## Features
 
-- **Simple String Interface**: Uses "agent: instruction" format for ease of use
+- **Structured Parameter Interface**: Uses `{agent, instruction}` dict format for clarity
 - **Dynamic Agent Discovery**: Queries available agents from registry
 - **Depth Limiting**: Prevents infinite recursion (configurable max_depth)
 - **Proper Event Emission**: Emits tool:pre, tool:post, tool:error with sub_session_id
@@ -55,28 +55,53 @@ config = {
 
 ## Usage
 
-The tool is automatically available to AI agents once mounted. The AI uses a simple string format:
+The tool is automatically available to AI agents once mounted. The AI uses structured parameters:
 
-```
-agent_name: instruction
+```python
+{
+    "agent": "agent_name",
+    "instruction": "task instruction"
+}
 ```
 
 Examples:
-- `architect: Analyze the authentication system architecture`
-- `researcher: Research best practices for JWT token management`
-- `implementer: Implement the user registration endpoint`
-- `reviewer: Review the recent changes for security issues`
+```python
+{"agent": "architect", "instruction": "Analyze the authentication system architecture"}
+{"agent": "researcher", "instruction": "Research best practices for JWT token management"}
+{"agent": "implementer", "instruction": "Implement the user registration endpoint"}
+{"agent": "reviewer", "instruction": "Review the recent changes for security issues"}
+```
 
 ## Input Format
 
-The tool accepts a single string input in the format:
-```
-agent_name: instruction
+The tool accepts a dictionary with two required fields:
+
+```python
+{
+    "agent": str,        # Agent name (must exist in registry)
+    "instruction": str   # Task or question for the agent
+}
 ```
 
-Where:
-- `agent_name`: The name of the agent to delegate to (must exist in agent registry)
-- `instruction`: The task or question for the agent to handle
+The input schema uses JSON Schema for validation:
+```python
+{
+    "type": "object",
+    "properties": {
+        "agent": {
+            "type": "string",
+            "description": "Agent name (e.g., 'zen-architect' or 'collection:agent')"
+        },
+        "instruction": {
+            "type": "string",
+            "description": "Task instruction for the agent"
+        }
+    },
+    "required": ["agent", "instruction"]
+}
+```
+
+**Collection syntax supported**: Agent names can include collection prefixes (e.g., `"developer-expertise:modular-builder"`).
 
 ## Output Format
 
@@ -84,9 +109,14 @@ On success:
 ```json
 {
     "success": true,
-    "output": "[Would delegate to agent_name]: instruction"
+    "output": {
+        "response": "agent response text",
+        "session_id": "parent-id-agent-abc123"
+    }
 }
 ```
+
+The `session_id` enables multi-turn engagement with the same sub-session.
 
 Note: The actual sub-session spawning is handled by the app layer. This tool provides the mechanism (event emission, validation) while the policy (how to spawn sessions) lives at the edges.
 
@@ -168,8 +198,8 @@ Emitted on delegation failure:
 ## Philosophy
 
 This tool follows kernel philosophy principles:
-- **Mechanism, not policy**: Provides delegation mechanism, app layer decides how to spawn
-- **Simple interfaces**: Single string input "agent: instruction"
+- **Mechanism, not policy**: Provides delegation mechanism (parameter extraction), app layer decides how to spawn
+- **Simple interfaces**: Structured parameters `{agent, instruction}` for clarity and extensibility
 - **Event-first**: Emits proper kernel events for observability
 - **Clean boundaries**: No direct session creation, uses mount points and capabilities
 - **Fail-fast validation**: Clear, meaningful error messages

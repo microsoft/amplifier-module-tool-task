@@ -94,12 +94,21 @@ class TaskTool:
         """Input schema for task delegation.
 
         Returns:
-            JSON schema for the tool input (OpenAI requires object type)
+            JSON schema for the tool input with structured parameters
         """
         return {
             "type": "object",
-            "properties": {"task": {"type": "string", "description": "Format: 'agent_name: instruction'"}},
-            "required": ["task"],
+            "properties": {
+                "agent": {
+                    "type": "string",
+                    "description": "Agent name (e.g., 'zen-architect' or 'collection:agent')"
+                },
+                "instruction": {
+                    "type": "string",
+                    "description": "Task instruction for the agent"
+                }
+            },
+            "required": ["agent", "instruction"]
         }
 
     def _get_agent_list(self) -> list[dict[str, Any]]:
@@ -115,87 +124,30 @@ class TaskTool:
 
         return [{"name": name, "description": cfg.get("description", "No description")} for name, cfg in agents.items()]
 
-    def _parse_agent_and_instruction(self, task_str: str, available_agents: dict) -> tuple[str, str]:
-        """
-        Parse task string to extract agent name and instruction.
+    async def execute(self, input: dict) -> ToolResult:
+        """Execute delegation with structured parameters.
 
-        Handles agent names containing colons (collection:agent format) by trying
-        longest-prefix matching against available agent names.
-
-        Args:
-            task_str: Input string in format "agent_name: instruction"
-            available_agents: Dict of available agent configs from mount plan
-
-        Returns:
-            Tuple of (agent_name, instruction)
-
-        Examples:
-            - Input: "zen-architect: design a cache"
-              → ("zen-architect", "design a cache")
-
-            - Input: "developer-expertise:modular-builder: implement auth module"
-              → ("developer-expertise:modular-builder", "implement auth module")
-        """
-        # Sort agent names by length (longest first) for greedy matching
-        # This ensures 'collection:agent' matches before 'collection' would
-        sorted_agent_names = sorted(available_agents.keys(), key=len, reverse=True)
-
-        # Try to match each available agent name as prefix
-        for agent_name in sorted_agent_names:
-            # Check if input starts with "agent_name: " (with colon and space)
-            prefix_with_colon = f"{agent_name}:"
-            if task_str.startswith(prefix_with_colon):
-                # Extract instruction after the agent name and colon
-                instruction = task_str[len(prefix_with_colon) :].strip()
-                if instruction:  # Must have non-empty instruction
-                    return agent_name, instruction
-
-        # Fallback: simple split (for backward compatibility or malformed input)
-        # This handles cases where agent name doesn't match any known agent
-        if ":" in task_str:
-            agent_name, instruction = task_str.split(":", 1)
-            return agent_name.strip(), instruction.strip()
-
-        # No colon found at all
-        return "", ""
-
-    async def execute(self, input: str | dict) -> ToolResult:
-        """Execute delegation with proper event emission.
-
-        Parses the input, validates the agent exists, checks recursion
-        depth, emits events, and requests sub-session spawn.
+        Extracts agent name and instruction from dict, validates,
+        and requests sub-session spawn via app layer.
 
         Args:
-            input: String in format "agent_name: instruction"
+            input: Dict with 'agent' and 'instruction' keys
 
         Returns:
             ToolResult with success status and output or error
         """
-        # Parse input - handle both string and dict formats
-        if isinstance(input, dict):
-            # OpenAI sends input as {"task": "agent_name: instruction"}
-            task_str = input.get("task", "")
-        elif isinstance(input, str):
-            # Direct string input for backward compatibility
-            task_str = input
-        else:
-            return ToolResult(success=False, error={"message": "Invalid input type"})
+        # Extract parameters (pure mechanism - 2 lines!)
+        agent_name = input.get("agent", "").strip()
+        instruction = input.get("instruction", "").strip()
 
-        if not task_str or ":" not in task_str:
-            return ToolResult(success=False, error={"message": "Invalid format. Use: 'agent_name: instruction'"})
-
-        # Get agents from coordinator infrastructure (needed for smart parsing)
-        agents = self.coordinator.config.get("agents", {})
-
-        # Smart parsing: handle agent names with colons (collection:agent format)
-        # Try longest-prefix matching against available agent names
-        agent_name, instruction = self._parse_agent_and_instruction(task_str, agents)
-
+        # Validate parameters
         if not agent_name:
             return ToolResult(success=False, error={"message": "Agent name cannot be empty"})
         if not instruction:
             return ToolResult(success=False, error={"message": "Instruction cannot be empty"})
 
+        # Check agent exists in registry
+        agents = self.coordinator.config.get("agents", {})
         if agent_name not in agents:
             return ToolResult(success=False, error={"message": f"Agent '{agent_name}' not found"})
 
