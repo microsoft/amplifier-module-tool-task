@@ -99,16 +99,10 @@ class TaskTool:
         return {
             "type": "object",
             "properties": {
-                "agent": {
-                    "type": "string",
-                    "description": "Agent name (e.g., 'zen-architect' or 'collection:agent')"
-                },
-                "instruction": {
-                    "type": "string",
-                    "description": "Task instruction for the agent"
-                }
+                "agent": {"type": "string", "description": "Agent name (e.g., 'zen-architect' or 'collection:agent')"},
+                "instruction": {"type": "string", "description": "Task instruction for the agent"},
             },
-            "required": ["agent", "instruction"]
+            "required": ["agent", "instruction"],
         }
 
     def _get_agent_list(self) -> list[dict[str, Any]]:
