@@ -78,9 +78,8 @@ class TaskTool:
         """
         agents_list = self._get_agent_list()
         if agents_list:
-            # Limit to 10 agents for brevity in description
             agent_desc = "\n".join(
-                f"  - {a['name']}: {a.get('description', 'No description')}" for a in agents_list[:10]
+                f"  - {a['name']}: {a.get('description', 'No description')}" for a in agents_list
             )
             return (
                 f"Delegate a sub-task to a specialized agent.\n"
@@ -116,7 +115,8 @@ class TaskTool:
         # Get agents from coordinator's infrastructure config property
         agents = self.coordinator.config.get("agents", {})
 
-        return [{"name": name, "description": cfg.get("description", "No description")} for name, cfg in agents.items()]
+        sorted_agents = sorted(agents.items(), key=lambda item: item[0])
+        return [{"name": name, "description": cfg.get("description", "No description")} for name, cfg in sorted_agents]
 
     async def execute(self, input: dict) -> ToolResult:
         """Execute delegation with structured parameters.
