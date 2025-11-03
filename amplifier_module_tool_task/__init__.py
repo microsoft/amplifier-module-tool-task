@@ -78,9 +78,7 @@ class TaskTool:
         """
         agents_list = self._get_agent_list()
         if agents_list:
-            agent_desc = "\n".join(
-                f"  - {a['name']}: {a.get('description', 'No description')}" for a in agents_list
-            )
+            agent_desc = "\n".join(f"  - {a['name']}: {a.get('description', 'No description')}" for a in agents_list)
             return (
                 f"Delegate a sub-task to a specialized agent.\n"
                 f"Usage: '<agent_name>: <instruction>'\n"
