@@ -90,16 +90,25 @@ class TaskTool:
     def input_schema(self) -> dict:
         """Input schema for task delegation.
 
+        Supports both spawn (agent + instruction) and resume (session_id + instruction).
+
         Returns:
             JSON schema for the tool input with structured parameters
         """
         return {
             "type": "object",
             "properties": {
-                "agent": {"type": "string", "description": "Agent name (e.g., 'zen-architect' or 'collection:agent')"},
+                "agent": {
+                    "type": "string",
+                    "description": "Agent name for spawning new sub-session (e.g., 'zen-architect')",
+                },
                 "instruction": {"type": "string", "description": "Task instruction for the agent"},
+                "session_id": {
+                    "type": "string",
+                    "description": "Session ID to resume (from previous spawn/resume response)",
+                },
             },
-            "required": ["agent", "instruction"],
+            "required": ["instruction"],
         }
 
     def _get_agent_list(self) -> list[dict[str, Any]]:
@@ -119,24 +128,40 @@ class TaskTool:
     async def execute(self, input: dict) -> ToolResult:
         """Execute delegation with structured parameters.
 
-        Extracts agent name and instruction from dict, validates,
-        and requests sub-session spawn via app layer.
+        Routes to spawn (new sub-session) or resume (existing sub-session)
+        based on input parameters.
 
         Args:
-            input: Dict with 'agent' and 'instruction' keys
+            input: Dict with 'instruction' (required) and either:
+                   - 'agent' (for spawn) or
+                   - 'session_id' (for resume)
 
         Returns:
             ToolResult with success status and output or error
         """
-        # Extract parameters (pure mechanism - 2 lines!)
+        # Extract parameters
         agent_name = input.get("agent", "").strip()
         instruction = input.get("instruction", "").strip()
+        session_id = input.get("session_id", "").strip()
 
-        # Validate parameters
-        if not agent_name:
-            return ToolResult(success=False, error={"message": "Agent name cannot be empty"})
+        # Validate instruction (always required)
         if not instruction:
             return ToolResult(success=False, error={"message": "Instruction cannot be empty"})
+
+        # Get hooks for error handling
+        hooks = self.coordinator.get("hooks")
+
+        # Route based on session_id presence
+        if session_id:
+            # RESUME MODE: Continue existing sub-session
+            return await self._resume_existing_session(session_id, instruction, hooks)
+
+        # SPAWN MODE: Create new sub-session (requires agent)
+        if not agent_name:
+            return ToolResult(
+                success=False,
+                error={"message": "Agent name required for new delegation (or provide session_id to resume)"},
+            )
 
         # Check agent exists in registry
         agents = self.coordinator.config.get("agents", {})
@@ -195,3 +220,63 @@ class TaskTool:
                 )
 
             return ToolResult(success=False, error={"message": f"Delegation failed: {str(e)}"})
+
+    async def _resume_existing_session(self, session_id: str, instruction: str, hooks) -> ToolResult:
+        """Resume existing sub-session (helper for execute).
+
+        Args:
+            session_id: Sub-session ID to resume
+            instruction: Follow-up instruction
+            hooks: Hook coordinator for event emission
+
+        Returns:
+            ToolResult with success status and output or error
+        """
+        parent_session_id = self.coordinator.session_id
+
+        try:
+            # Import resume helper (app layer - same pattern as spawn)
+            from amplifier_app_cli.session_spawner import resume_sub_session
+
+            # Resume sub-session
+            result = await resume_sub_session(
+                sub_session_id=session_id,
+                instruction=instruction,
+            )
+
+            # Return output with session_id (same across turns)
+            return ToolResult(
+                success=True,
+                output={"response": result["output"], "session_id": result["session_id"]},
+            )
+
+        except FileNotFoundError as e:
+            # Session not found
+            if hooks:
+                await hooks.emit(
+                    "tool:error",
+                    {
+                        "tool": "task",
+                        "session_id": session_id,
+                        "parent_session_id": parent_session_id,
+                        "error": f"Session not found: {str(e)}",
+                    },
+                )
+            return ToolResult(
+                success=False,
+                error={"message": f"Session '{session_id}' not found. May have expired or never existed."},
+            )
+
+        except Exception as e:
+            # Other errors (corrupted metadata, etc.)
+            if hooks:
+                await hooks.emit(
+                    "tool:error",
+                    {
+                        "tool": "task",
+                        "session_id": session_id,
+                        "parent_session_id": parent_session_id,
+                        "error": str(e),
+                    },
+                )
+            return ToolResult(success=False, error={"message": f"Resume failed: {str(e)}"})
