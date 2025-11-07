@@ -12,8 +12,10 @@ This is the MOST CRITICAL missing feature for autonomous coding capability. It a
 
 ## Features
 
-- **Structured Parameter Interface**: Uses `{agent, instruction}` dict format for clarity
+- **Multi-Turn Conversations**: Resume existing sub-sessions for iterative collaboration
+- **Structured Parameter Interface**: Uses `{agent, instruction, session_id?}` dict format for clarity
 - **Dynamic Agent Discovery**: Queries available agents from registry
+- **Automatic State Persistence**: Sub-session state saved and resumable
 - **Depth Limiting**: Prevents infinite recursion (configurable max_depth)
 - **Proper Event Emission**: Emits tool:pre, tool:post, tool:error with sub_session_id
 - **Parent/Child Linking**: Tracks session relationships via IDs
@@ -55,7 +57,11 @@ config = {
 
 ## Usage
 
-The tool is automatically available to AI agents once mounted. The AI uses structured parameters:
+The tool is automatically available to AI agents once mounted. The AI uses structured parameters for both spawning new sub-sessions and resuming existing ones.
+
+### Spawning New Sub-Sessions
+
+Use the `agent` parameter to start a new conversation:
 
 ```python
 {
@@ -72,14 +78,49 @@ Examples:
 {"agent": "reviewer", "instruction": "Review the recent changes for security issues"}
 ```
 
-## Input Format
+### Resuming Existing Sub-Sessions
 
-The tool accepts a dictionary with two required fields:
+Use the `session_id` parameter to continue a previous conversation:
 
 ```python
 {
-    "agent": str,        # Agent name (must exist in registry)
-    "instruction": str   # Task or question for the agent
+    "session_id": "parent-123-architect-abc456",
+    "instruction": "follow-up instruction"
+}
+```
+
+Multi-turn example:
+```python
+# Turn 1: Start design conversation
+response1 = {"agent": "architect", "instruction": "Design a caching system"}
+# Returns: {"response": "...", "session_id": "parent-123-architect-abc456"}
+
+# Turn 2: Refine the design (using session_id from turn 1)
+response2 = {"session_id": "parent-123-architect-abc456", "instruction": "Add TTL support"}
+
+# Turn 3: Continue iteration
+response3 = {"session_id": "parent-123-architect-abc456", "instruction": "Add eviction policies"}
+```
+
+Each resumed turn has access to the full conversation history.
+
+## Input Format
+
+The tool accepts a dictionary with one required field (`instruction`) and one of two optional fields (`agent` for spawn, `session_id` for resume):
+
+### Spawn Mode (New Sub-Session)
+```python
+{
+    "agent": str,        # Agent name (must exist in registry) - Required for spawn
+    "instruction": str   # Task or question for the agent - Always required
+}
+```
+
+### Resume Mode (Continue Existing Sub-Session)
+```python
+{
+    "session_id": str,   # Session ID from previous spawn/resume - Required for resume
+    "instruction": str   # Follow-up instruction - Always required
 }
 ```
 
@@ -95,11 +136,17 @@ The input schema uses JSON Schema for validation:
         "instruction": {
             "type": "string",
             "description": "Task instruction for the agent"
+        },
+        "session_id": {
+            "type": "string",
+            "description": "Session ID to resume (from previous spawn/resume response)"
         }
     },
-    "required": ["agent", "instruction"]
+    "required": ["instruction"]
 }
 ```
+
+**Routing**: If `session_id` provided → resume existing sub-session, else → spawn new sub-session with `agent`.
 
 **Collection syntax supported**: Agent names can include collection prefixes (e.g., `"developer-expertise:modular-builder"`).
 
@@ -116,9 +163,17 @@ On success:
 }
 ```
 
-The `session_id` enables multi-turn engagement with the same sub-session.
+The `session_id` enables multi-turn engagement:
+- **Save it** to resume the conversation later
+- **Pass it back** with new instructions to continue the same context
+- **Same across turns** so the agent remembers previous discussion
 
-Note: The actual sub-session spawning is handled by the app layer. This tool provides the mechanism (event emission, validation) while the policy (how to spawn sessions) lives at the edges.
+**State Persistence**: Sub-session state (transcript and configuration) is automatically saved after each turn, enabling:
+- Resume across multiple parent turns
+- Survive parent session restarts
+- Continue after interruptions or errors
+
+Note: The actual sub-session spawning and persistence is handled by the app layer. This tool provides the mechanism (routing, event emission, validation) while the policy (how to spawn and persist sessions) lives at the edges.
 
 ## Agent Types
 
@@ -206,11 +261,10 @@ This tool follows kernel philosophy principles:
 
 ## Future Enhancements
 
-- Full session.spawn capability implementation in app layer
-- Memory inheritance between sessions
-- Task result caching
-- Parallel task execution
-- Advanced context management
+- Memory inheritance between sessions (selective context passing)
+- Task result caching (for idempotent operations)
+- Parallel task execution (concurrent agent delegation)
+- Advanced context management (context trimming, summarization)
 
 ## Contributing
 
