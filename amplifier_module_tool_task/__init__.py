@@ -36,9 +36,23 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
         None - No cleanup needed for this module
     """
     config = config or {}
+
+    # Declare observable lifecycle events for this module
+    # (hooks-logging will auto-discover and log these)
+    # Get existing list, extend, then re-register (aggregation pattern)
+    obs_events = coordinator.get_capability("observability.events") or []
+    obs_events.extend(
+        [
+            "task:agent_spawned",  # When agent sub-session spawned
+            "task:agent_resumed",  # When agent sub-session resumed
+            "task:agent_completed",  # When agent sub-session completed
+        ]
+    )
+    coordinator.register_capability("observability.events", obs_events)
+
     tool = TaskTool(coordinator, config)
     await coordinator.mount("tools", tool, name=tool.name)
-    logger.info("Mounted TaskTool")
+    logger.info("Mounted TaskTool with observable events")
     return  # No cleanup needed
 
 
@@ -246,6 +260,17 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
             # Get parent session from coordinator infrastructure
             parent_session = self.coordinator.session
 
+            # Emit task:agent_spawned event
+            if hooks:
+                await hooks.emit(
+                    "task:agent_spawned",
+                    {
+                        "agent": agent_name,
+                        "sub_session_id": sub_session_id,
+                        "parent_session_id": parent_session_id,
+                    },
+                )
+
             # Spawn sub-session with agent configuration overlay
             result = await spawn_sub_session(
                 agent_name=agent_name,
@@ -255,8 +280,17 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                 sub_session_id=sub_session_id,
             )
 
-            # Note: Orchestrator will emit tool:post with standard result field
-            # We don't emit here to avoid double display in UI
+            # Emit task:agent_completed event
+            if hooks:
+                await hooks.emit(
+                    "task:agent_completed",
+                    {
+                        "agent": agent_name,
+                        "sub_session_id": sub_session_id,
+                        "parent_session_id": parent_session_id,
+                        "success": True,
+                    },
+                )
 
             # Return output with session_id for multi-turn capability
             return ToolResult(
@@ -294,6 +328,16 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
         parent_session_id = self.coordinator.session_id
 
         try:
+            # Emit task:agent_resumed event
+            if hooks:
+                await hooks.emit(
+                    "task:agent_resumed",
+                    {
+                        "session_id": session_id,
+                        "parent_session_id": parent_session_id,
+                    },
+                )
+
             # Import resume helper (app layer - same pattern as spawn)
             from amplifier_app_cli.session_spawner import resume_sub_session
 
@@ -302,6 +346,17 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                 sub_session_id=session_id,
                 instruction=instruction,
             )
+
+            # Emit task:agent_completed event
+            if hooks:
+                await hooks.emit(
+                    "task:agent_completed",
+                    {
+                        "sub_session_id": session_id,
+                        "parent_session_id": parent_session_id,
+                        "success": True,
+                    },
+                )
 
             # Return output with session_id (same across turns)
             return ToolResult(
