@@ -247,8 +247,11 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
         # Get parent session ID from coordinator infrastructure
         parent_session_id = self.coordinator.session_id
 
-        # Generate hierarchical sub-session ID
-        sub_session_id = f"{parent_session_id}-{agent_name}-{uuid.uuid4().hex[:8]}"
+        # Generate hierarchical sub-session ID using W3C Trace Context format
+        # Format: {parent-span}-{child-span}_{agent-name}
+        # Underscore separator enables streaming UI to parse agent name
+        child_span = uuid.uuid4().hex[:16]  # 16-char child span ID
+        sub_session_id = f"{parent_session_id}-{child_span}_{agent_name}"
 
         # Get hooks for error handling (orchestrator will emit tool:pre/post)
         hooks = self.coordinator.get("hooks")
