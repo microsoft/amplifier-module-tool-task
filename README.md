@@ -5,6 +5,7 @@ Task delegation tool for Amplifier that enables AI agents to spawn sub-sessions 
 ## Purpose
 
 This is the MOST CRITICAL missing feature for autonomous coding capability. It allows AI agents to:
+
 - Delegate complex subtasks to specialized sub-agents
 - Maintain isolated contexts for each subtask
 - Preserve key learnings while preventing context pollution
@@ -39,7 +40,7 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ## Installation
 
 ```bash
-cd amplifier-next/amplifier-module-tool-task
+cd amplifier-module-tool-task
 uv pip install -e .
 ```
 
@@ -71,6 +72,7 @@ Use the `agent` parameter to start a new conversation:
 ```
 
 Examples:
+
 ```python
 {"agent": "architect", "instruction": "Analyze the authentication system architecture"}
 {"agent": "researcher", "instruction": "Research best practices for JWT token management"}
@@ -90,6 +92,7 @@ Use the `session_id` parameter to continue a previous conversation:
 ```
 
 Multi-turn example:
+
 ```python
 # Turn 1: Start design conversation
 response1 = {"agent": "architect", "instruction": "Design a caching system"}
@@ -109,6 +112,7 @@ Each resumed turn has access to the full conversation history.
 The tool accepts a dictionary with one required field (`instruction`) and one of two optional fields (`agent` for spawn, `session_id` for resume):
 
 ### Spawn Mode (New Sub-Session)
+
 ```python
 {
     "agent": str,        # Agent name (must exist in registry) - Required for spawn
@@ -117,6 +121,7 @@ The tool accepts a dictionary with one required field (`instruction`) and one of
 ```
 
 ### Resume Mode (Continue Existing Sub-Session)
+
 ```python
 {
     "session_id": str,   # Session ID from previous spawn/resume - Required for resume
@@ -125,6 +130,7 @@ The tool accepts a dictionary with one required field (`instruction`) and one of
 ```
 
 The input schema uses JSON Schema for validation:
+
 ```python
 {
     "type": "object",
@@ -153,22 +159,25 @@ The input schema uses JSON Schema for validation:
 ## Output Format
 
 On success:
+
 ```json
 {
-    "success": true,
-    "output": {
-        "response": "agent response text",
-        "session_id": "parent-id-agent-abc123"
-    }
+  "success": true,
+  "output": {
+    "response": "agent response text",
+    "session_id": "parent-id-agent-abc123"
+  }
 }
 ```
 
 The `session_id` enables multi-turn engagement:
+
 - **Save it** to resume the conversation later
 - **Pass it back** with new instructions to continue the same context
 - **Same across turns** so the agent remembers previous discussion
 
 **State Persistence**: Sub-session state (transcript and configuration) is automatically saved after each turn, enabling:
+
 - Resume across multiple parent turns
 - Survive parent session restarts
 - Continue after interruptions or errors
@@ -178,23 +187,28 @@ Note: The actual sub-session spawning and persistence is handled by the app laye
 ## Agent Types
 
 ### default
+
 Standard agent with no special configuration. Inherits parent tools and providers.
 
 ### architect
+
 - Temperature: 0.7
 - System prompt: "You are a zen architect valuing simplicity"
 - Focus: System design and architecture decisions
 
 ### researcher
+
 - Tools: Web and search tools only
 - Focus: Information gathering and analysis
 
 ### implementer
+
 - Tools: Filesystem and bash tools
 - Temperature: 0.3 (lower for code generation)
 - Focus: Writing clean, functional code
 
 ### reviewer
+
 - Tools: Filesystem and grep tools
 - System prompt: "You are a code reviewer. Find issues and suggest improvements"
 - Focus: Code quality and security review
@@ -202,6 +216,7 @@ Standard agent with no special configuration. Inherits parent tools and provider
 ## Error Handling
 
 The tool handles several error cases:
+
 - Missing task description
 - Maximum recursion depth exceeded
 - Sub-session initialization failures
@@ -214,45 +229,52 @@ All errors are logged and returned with descriptive messages.
 The tool emits standard kernel events:
 
 ### tool:pre
+
 Emitted before delegation attempt:
+
 ```json
 {
-    "tool": "task",
-    "agent": "agent_name",
-    "instruction": "instruction text",
-    "sub_session_id": "s-uuid",
-    "parent_session_id": "parent-id",
-    "depth": 1
+  "tool": "task",
+  "agent": "agent_name",
+  "instruction": "instruction text",
+  "sub_session_id": "s-uuid",
+  "parent_session_id": "parent-id",
+  "depth": 1
 }
 ```
 
 ### tool:post
+
 Emitted after successful delegation:
+
 ```json
 {
-    "tool": "task",
-    "agent": "agent_name",
-    "sub_session_id": "s-uuid",
-    "parent_session_id": "parent-id",
-    "status": "ok"
+  "tool": "task",
+  "agent": "agent_name",
+  "sub_session_id": "s-uuid",
+  "parent_session_id": "parent-id",
+  "status": "ok"
 }
 ```
 
 ### tool:error
+
 Emitted on delegation failure:
+
 ```json
 {
-    "tool": "task",
-    "agent": "agent_name",
-    "sub_session_id": "s-uuid",
-    "parent_session_id": "parent-id",
-    "error": "error message"
+  "tool": "task",
+  "agent": "agent_name",
+  "sub_session_id": "s-uuid",
+  "parent_session_id": "parent-id",
+  "error": "error message"
 }
 ```
 
 ## Philosophy
 
 This tool follows kernel philosophy principles:
+
 - **Mechanism, not policy**: Provides delegation mechanism (parameter extraction), app layer decides how to spawn
 - **Simple interfaces**: Structured parameters `{agent, instruction}` for clarity and extensibility
 - **Event-first**: Emits proper kernel events for observability
