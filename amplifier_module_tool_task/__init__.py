@@ -14,6 +14,9 @@ Key Design Points:
 - Fallback behavior when session.spawn not available
 """
 
+# Amplifier module metadata
+__amplifier_module_type__ = "tool"
+
 import logging
 import uuid
 from typing import Any
