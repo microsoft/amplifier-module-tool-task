@@ -260,8 +260,15 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
         hooks = self.coordinator.get("hooks")
 
         try:
-            # Import spawn helper (app layer)
-            from amplifier_app_cli.session_spawner import spawn_sub_session
+            # Get spawn capability (registered by app layer)
+            spawn_fn = self.coordinator.get_capability("session.spawn")
+            if spawn_fn is None:
+                return ToolResult(
+                    success=False,
+                    error={
+                        "message": "Session spawning not available. App layer must register 'session.spawn' capability."
+                    },
+                )
 
             # Get parent session from coordinator infrastructure
             parent_session = self.coordinator.session
@@ -278,7 +285,7 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                 )
 
             # Spawn sub-session with agent configuration overlay
-            result = await spawn_sub_session(
+            result = await spawn_fn(
                 agent_name=agent_name,
                 instruction=instruction,
                 parent_session=parent_session,
@@ -344,11 +351,18 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                     },
                 )
 
-            # Import resume helper (app layer - same pattern as spawn)
-            from amplifier_app_cli.session_spawner import resume_sub_session
+            # Get resume capability (registered by app layer)
+            resume_fn = self.coordinator.get_capability("session.resume")
+            if resume_fn is None:
+                return ToolResult(
+                    success=False,
+                    error={
+                        "message": "Session resumption not available. App layer must register 'session.resume' capability."
+                    },
+                )
 
             # Resume sub-session
-            result = await resume_sub_session(
+            result = await resume_fn(
                 sub_session_id=session_id,
                 instruction=instruction,
             )
