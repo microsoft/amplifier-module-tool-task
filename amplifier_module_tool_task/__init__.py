@@ -12,6 +12,11 @@ Key Design Points:
 - Dynamic description from agent registry
 - Configurable recursion depth limiting
 - Fallback behavior when session.spawn not available
+
+Config Options:
+- exclude_tools: List of tools spawned agents should NOT receive (e.g., ["tool-task"])
+- inherit_tools: List of tools spawned agents SHOULD receive (mutually exclusive with exclude_tools)
+- max_recursion_depth: Maximum depth for nested delegations (default: 1)
 """
 
 # Amplifier module metadata
@@ -33,6 +38,8 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
     Args:
         coordinator: The module coordinator
         config: Optional configuration with:
+            - exclude_tools: Tools spawned agents should NOT inherit (e.g., ["tool-task"])
+            - inherit_tools: Tools spawned agents SHOULD inherit (mutually exclusive with exclude_tools)
             - max_recursion_depth: Maximum depth for nested delegations (default: 1)
 
     Returns:
@@ -81,10 +88,16 @@ class TaskTool:
         Args:
             coordinator: Module coordinator for accessing capabilities
             config: Configuration dictionary with optional:
+                - exclude_tools: Tools spawned agents should NOT inherit
+                - inherit_tools: Tools spawned agents SHOULD inherit
                 - max_recursion_depth: Max delegation depth (default: 1)
         """
         self.coordinator = coordinator
         self.config = config
+
+        # Tool inheritance settings (mutually exclusive)
+        self.exclude_tools: list[str] = config.get("exclude_tools", [])
+        self.inherit_tools: list[str] | None = config.get("inherit_tools")  # None means inherit all
 
     @property
     def description(self) -> str:
@@ -284,6 +297,13 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                     },
                 )
 
+            # Build tool inheritance policy from config
+            tool_inheritance = {}
+            if self.exclude_tools:
+                tool_inheritance["exclude_tools"] = self.exclude_tools
+            elif self.inherit_tools is not None:
+                tool_inheritance["inherit_tools"] = self.inherit_tools
+
             # Spawn sub-session with agent configuration overlay
             result = await spawn_fn(
                 agent_name=agent_name,
@@ -291,6 +311,7 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                 parent_session=parent_session,
                 agent_configs=agents,
                 sub_session_id=sub_session_id,
+                tool_inheritance=tool_inheritance,
             )
 
             # Emit task:agent_completed event
