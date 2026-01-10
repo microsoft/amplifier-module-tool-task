@@ -16,6 +16,8 @@ Key Design Points:
 Config Options:
 - exclude_tools: List of tools spawned agents should NOT receive (e.g., ["tool-task"])
 - inherit_tools: List of tools spawned agents SHOULD receive (mutually exclusive with exclude_tools)
+- exclude_hooks: List of hooks spawned agents should NOT receive (e.g., ["hooks-logging"])
+- inherit_hooks: List of hooks spawned agents SHOULD receive (mutually exclusive with exclude_hooks)
 - max_recursion_depth: Maximum depth for nested delegations (default: 1)
 """
 
@@ -40,6 +42,8 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
         config: Optional configuration with:
             - exclude_tools: Tools spawned agents should NOT inherit (e.g., ["tool-task"])
             - inherit_tools: Tools spawned agents SHOULD inherit (mutually exclusive with exclude_tools)
+            - exclude_hooks: Hooks spawned agents should NOT inherit (e.g., ["hooks-logging"])
+            - inherit_hooks: Hooks spawned agents SHOULD inherit (mutually exclusive with exclude_hooks)
             - max_recursion_depth: Maximum depth for nested delegations (default: 1)
 
     Returns:
@@ -90,6 +94,8 @@ class TaskTool:
             config: Configuration dictionary with optional:
                 - exclude_tools: Tools spawned agents should NOT inherit
                 - inherit_tools: Tools spawned agents SHOULD inherit
+                - exclude_hooks: Hooks spawned agents should NOT inherit
+                - inherit_hooks: Hooks spawned agents SHOULD inherit
                 - max_recursion_depth: Max delegation depth (default: 1)
         """
         self.coordinator = coordinator
@@ -97,7 +103,15 @@ class TaskTool:
 
         # Tool inheritance settings (mutually exclusive)
         self.exclude_tools: list[str] = config.get("exclude_tools", [])
-        self.inherit_tools: list[str] | None = config.get("inherit_tools")  # None means inherit all
+        self.inherit_tools: list[str] | None = config.get(
+            "inherit_tools"
+        )  # None means inherit all
+
+        # Hook inheritance settings (mutually exclusive)
+        self.exclude_hooks: list[str] = config.get("exclude_hooks", [])
+        self.inherit_hooks: list[str] | None = config.get(
+            "inherit_hooks"
+        )  # None means inherit all
 
     @property
     def description(self) -> str:
@@ -108,7 +122,10 @@ class TaskTool:
         """
         agents_list = self._get_agent_list()
         if agents_list:
-            agent_desc = "\n".join(f"  - {a['name']}: {a.get('description', 'No description')}" for a in agents_list)
+            agent_desc = "\n".join(
+                f"  - {a['name']}: {a.get('description', 'No description')}"
+                for a in agents_list
+            )
             return (
                 """
 Launch a new agent to handle complex, multi-step tasks autonomously.
@@ -191,7 +208,10 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                     "type": "string",
                     "description": "Agent name for spawning new sub-session (e.g., 'developer-expertise:zen-architect')",
                 },
-                "instruction": {"type": "string", "description": "Task instruction for the agent"},
+                "instruction": {
+                    "type": "string",
+                    "description": "Task instruction for the agent",
+                },
                 "session_id": {
                     "type": "string",
                     "description": "Optional Session ID to resume (from previous spawn/resume response)",
@@ -212,7 +232,10 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
         agents = self.coordinator.config.get("agents", {})
 
         sorted_agents = sorted(agents.items(), key=lambda item: item[0])
-        return [{"name": name, "description": cfg.get("description", "No description")} for name, cfg in sorted_agents]
+        return [
+            {"name": name, "description": cfg.get("description", "No description")}
+            for name, cfg in sorted_agents
+        ]
 
     async def execute(self, input: dict) -> ToolResult:
         """Execute delegation with structured parameters.
@@ -235,7 +258,9 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
 
         # Validate instruction (always required)
         if not instruction:
-            return ToolResult(success=False, error={"message": "Instruction cannot be empty"})
+            return ToolResult(
+                success=False, error={"message": "Instruction cannot be empty"}
+            )
 
         # Get hooks for error handling
         hooks = self.coordinator.get("hooks")
@@ -249,13 +274,17 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
         if not agent_name:
             return ToolResult(
                 success=False,
-                error={"message": "Agent name required for new delegation (or provide session_id to resume)"},
+                error={
+                    "message": "Agent name required for new delegation (or provide session_id to resume)"
+                },
             )
 
         # Check agent exists in registry
         agents = self.coordinator.config.get("agents", {})
         if agent_name not in agents:
-            return ToolResult(success=False, error={"message": f"Agent '{agent_name}' not found"})
+            return ToolResult(
+                success=False, error={"message": f"Agent '{agent_name}' not found"}
+            )
 
         # Note: Recursion depth limiting not yet implemented
         # Future: Track depth in metadata and check against config.max_recursion_depth
@@ -304,6 +333,13 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
             elif self.inherit_tools is not None:
                 tool_inheritance["inherit_tools"] = self.inherit_tools
 
+            # Build hook inheritance policy from config
+            hook_inheritance = {}
+            if self.exclude_hooks:
+                hook_inheritance["exclude_hooks"] = self.exclude_hooks
+            elif self.inherit_hooks is not None:
+                hook_inheritance["inherit_hooks"] = self.inherit_hooks
+
             # Spawn sub-session with agent configuration overlay
             result = await spawn_fn(
                 agent_name=agent_name,
@@ -312,6 +348,7 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                 agent_configs=agents,
                 sub_session_id=sub_session_id,
                 tool_inheritance=tool_inheritance,
+                hook_inheritance=hook_inheritance,
             )
 
             # Emit task:agent_completed event
@@ -329,7 +366,10 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
             # Return output with session_id for multi-turn capability
             return ToolResult(
                 success=True,
-                output={"response": result["output"], "session_id": result["session_id"]},
+                output={
+                    "response": result["output"],
+                    "session_id": result["session_id"],
+                },
             )
 
         except Exception as e:
@@ -346,9 +386,13 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                     },
                 )
 
-            return ToolResult(success=False, error={"message": f"Delegation failed: {str(e)}"})
+            return ToolResult(
+                success=False, error={"message": f"Delegation failed: {str(e)}"}
+            )
 
-    async def _resume_existing_session(self, session_id: str, instruction: str, hooks) -> ToolResult:
+    async def _resume_existing_session(
+        self, session_id: str, instruction: str, hooks
+    ) -> ToolResult:
         """Resume existing sub-session (helper for execute).
 
         Args:
@@ -402,7 +446,10 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
             # Return output with session_id (same across turns)
             return ToolResult(
                 success=True,
-                output={"response": result["output"], "session_id": result["session_id"]},
+                output={
+                    "response": result["output"],
+                    "session_id": result["session_id"],
+                },
             )
 
         except FileNotFoundError as e:
@@ -419,7 +466,9 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                 )
             return ToolResult(
                 success=False,
-                error={"message": f"Session '{session_id}' not found. May have expired or never existed."},
+                error={
+                    "message": f"Session '{session_id}' not found. May have expired or never existed."
+                },
             )
 
         except Exception as e:
@@ -434,4 +483,6 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                         "error": str(e),
                     },
                 )
-            return ToolResult(success=False, error={"message": f"Resume failed: {str(e)}"})
+            return ToolResult(
+                success=False, error={"message": f"Resume failed: {str(e)}"}
+            )
