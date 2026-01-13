@@ -617,6 +617,18 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                 )
                 effective_instruction = f"{context_text}\n\n[YOUR TASK]\n{instruction}"
 
+            # Extract orchestrator config from parent session for inheritance
+            # This ensures rate limiting and other orchestrator settings propagate to child sessions
+            orchestrator_config = None
+            parent_config = parent_session.config or {}
+            session_config = parent_config.get("session", {})
+            orch_section = session_config.get("orchestrator", {})
+            if orch_config := orch_section.get("config"):
+                orchestrator_config = orch_config
+                logger.debug(
+                    f"Inheriting orchestrator config from parent: {orchestrator_config}"
+                )
+
             # Spawn sub-session with agent configuration overlay
             result = await spawn_fn(
                 agent_name=agent_name,
@@ -626,6 +638,7 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                 sub_session_id=sub_session_id,
                 tool_inheritance=tool_inheritance,
                 hook_inheritance=hook_inheritance,
+                orchestrator_config=orchestrator_config,
             )
 
             # Emit task:agent_completed event
