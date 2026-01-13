@@ -19,8 +19,10 @@ Config Options:
 - exclude_hooks: List of hooks spawned agents should NOT receive (e.g., ["hooks-logging"])
 - inherit_hooks: List of hooks spawned agents SHOULD receive (mutually exclusive with exclude_hooks)
 - max_recursion_depth: Maximum depth for nested delegations (default: 1)
+
+Tool Parameters (caller-controlled):
 - inherit_context: Context inheritance mode - "none" (default), "recent", or "all"
-- inherit_context_turns: Number of recent turns to inherit when inherit_context is "recent" (default: 5)
+- inherit_context_turns: Number of recent turns when inherit_context is "recent" (default: 5)
 """
 
 # Amplifier module metadata
@@ -47,8 +49,6 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
             - exclude_hooks: Hooks spawned agents should NOT inherit (e.g., ["hooks-logging"])
             - inherit_hooks: Hooks spawned agents SHOULD inherit (mutually exclusive with exclude_hooks)
             - max_recursion_depth: Maximum depth for nested delegations (default: 1)
-            - inherit_context: Context inheritance mode - "none" (default), "recent", or "all"
-            - inherit_context_turns: Number of recent turns to inherit (default: 5)
 
     Returns:
         None - No cleanup needed for this module
@@ -101,8 +101,6 @@ class TaskTool:
                 - exclude_hooks: Hooks spawned agents should NOT inherit
                 - inherit_hooks: Hooks spawned agents SHOULD inherit
                 - max_recursion_depth: Max delegation depth (default: 1)
-                - inherit_context: Context inheritance mode - "none", "recent", or "all"
-                - inherit_context_turns: Number of recent turns to inherit (default: 5)
         """
         self.coordinator = coordinator
         self.config = config
@@ -118,13 +116,6 @@ class TaskTool:
         self.inherit_hooks: list[str] | None = config.get(
             "inherit_hooks"
         )  # None means inherit all
-
-        # Context inheritance settings
-        # - "none": Child starts fresh (default, current behavior)
-        # - "recent": Pass last N turns of parent conversation
-        # - "all": Pass entire parent conversation history
-        self.inherit_context: str = config.get("inherit_context", "none")
-        self.inherit_context_turns: int = config.get("inherit_context_turns", 5)
 
     @property
     def description(self) -> str:
@@ -228,6 +219,15 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                 "session_id": {
                     "type": "string",
                     "description": "Optional Session ID to resume (from previous spawn/resume response)",
+                },
+                "inherit_context": {
+                    "type": "string",
+                    "enum": ["none", "recent", "all"],
+                    "description": "Context inheritance mode: 'none' (default) - child starts fresh, 'recent' - pass last N turns, 'all' - pass full conversation history",
+                },
+                "inherit_context_turns": {
+                    "type": "integer",
+                    "description": "Number of recent turns to pass when inherit_context is 'recent' (default: 5)",
                 },
             },
             "required": ["instruction"],
@@ -430,6 +430,51 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
         # Empty or unrecognized format
         return ""
 
+    def _format_parent_context_for_instruction(
+        self, messages: list[dict[str, Any]]
+    ) -> str:
+        """Format parent messages as text to prepend to the instruction.
+
+        This ensures the child agent sees the parent context regardless of
+        how the session/orchestrator handles pre-existing context messages.
+
+        Args:
+            messages: List of sanitized messages from parent session
+
+        Returns:
+            Formatted text block with parent conversation context
+        """
+        if not messages:
+            return ""
+
+        lines = ["[PARENT CONVERSATION CONTEXT]"]
+        lines.append(
+            "The following is recent conversation history from the parent session:"
+        )
+        lines.append("")
+
+        for msg in messages:
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+
+            # Format role nicely
+            role_label = role.upper()
+            if role == "user":
+                role_label = "USER"
+            elif role == "assistant":
+                role_label = "ASSISTANT"
+
+            # Truncate very long messages to avoid overwhelming the child
+            max_content_len = 2000
+            if len(content) > max_content_len:
+                content = content[:max_content_len] + "... [truncated]"
+
+            lines.append(f"{role_label}: {content}")
+            lines.append("")
+
+        lines.append("[END PARENT CONTEXT]")
+        return "\n".join(lines)
+
     def _get_agent_list(self) -> list[dict[str, Any]]:
         """Get list of available agents from mount plan.
 
@@ -465,6 +510,10 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
         agent_name = input.get("agent", "").strip()
         instruction = input.get("instruction", "").strip()
         session_id = input.get("session_id", "").strip()
+
+        # Context inheritance parameters (caller-controlled)
+        inherit_context = input.get("inherit_context", "none")
+        inherit_context_turns = input.get("inherit_context_turns", 5)
 
         # Validate instruction (always required)
         if not instruction:
@@ -550,25 +599,33 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
             elif self.inherit_hooks is not None:
                 hook_inheritance["inherit_hooks"] = self.inherit_hooks
 
-            # Extract parent messages based on context inheritance policy
+            # Extract parent messages based on context inheritance policy (caller-controlled)
             parent_messages = await self._extract_parent_messages(
-                self.inherit_context, self.inherit_context_turns
+                inherit_context, inherit_context_turns
             )
+
+            # Format parent context into instruction if messages were extracted
+            # This ensures the child agent sees the parent context regardless of
+            # how the session/orchestrator handles pre-existing context messages
+            effective_instruction = instruction
             if parent_messages:
                 logger.debug(
                     f"Extracted {len(parent_messages)} parent messages for child session"
                 )
+                context_text = self._format_parent_context_for_instruction(
+                    parent_messages
+                )
+                effective_instruction = f"{context_text}\n\n[YOUR TASK]\n{instruction}"
 
             # Spawn sub-session with agent configuration overlay
             result = await spawn_fn(
                 agent_name=agent_name,
-                instruction=instruction,
+                instruction=effective_instruction,
                 parent_session=parent_session,
                 agent_configs=agents,
                 sub_session_id=sub_session_id,
                 tool_inheritance=tool_inheritance,
                 hook_inheritance=hook_inheritance,
-                parent_messages=parent_messages,
             )
 
             # Emit task:agent_completed event
