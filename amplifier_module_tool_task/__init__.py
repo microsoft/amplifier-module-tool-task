@@ -19,6 +19,8 @@ Config Options:
 - exclude_hooks: List of hooks spawned agents should NOT receive (e.g., ["hooks-logging"])
 - inherit_hooks: List of hooks spawned agents SHOULD receive (mutually exclusive with exclude_hooks)
 - max_recursion_depth: Maximum depth for nested delegations (default: 1)
+- inherit_context: Context inheritance mode - "none" (default), "recent", or "all"
+- inherit_context_turns: Number of recent turns to inherit when inherit_context is "recent" (default: 5)
 """
 
 # Amplifier module metadata
@@ -45,6 +47,8 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
             - exclude_hooks: Hooks spawned agents should NOT inherit (e.g., ["hooks-logging"])
             - inherit_hooks: Hooks spawned agents SHOULD inherit (mutually exclusive with exclude_hooks)
             - max_recursion_depth: Maximum depth for nested delegations (default: 1)
+            - inherit_context: Context inheritance mode - "none" (default), "recent", or "all"
+            - inherit_context_turns: Number of recent turns to inherit (default: 5)
 
     Returns:
         None - No cleanup needed for this module
@@ -97,6 +101,8 @@ class TaskTool:
                 - exclude_hooks: Hooks spawned agents should NOT inherit
                 - inherit_hooks: Hooks spawned agents SHOULD inherit
                 - max_recursion_depth: Max delegation depth (default: 1)
+                - inherit_context: Context inheritance mode - "none", "recent", or "all"
+                - inherit_context_turns: Number of recent turns to inherit (default: 5)
         """
         self.coordinator = coordinator
         self.config = config
@@ -112,6 +118,13 @@ class TaskTool:
         self.inherit_hooks: list[str] | None = config.get(
             "inherit_hooks"
         )  # None means inherit all
+
+        # Context inheritance settings
+        # - "none": Child starts fresh (default, current behavior)
+        # - "recent": Pass last N turns of parent conversation
+        # - "all": Pass entire parent conversation history
+        self.inherit_context: str = config.get("inherit_context", "none")
+        self.inherit_context_turns: int = config.get("inherit_context_turns", 5)
 
     @property
     def description(self) -> str:
@@ -219,6 +232,203 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
             },
             "required": ["instruction"],
         }
+
+    async def _extract_parent_messages(
+        self, inherit_context: str, inherit_context_turns: int
+    ) -> list[dict[str, Any]] | None:
+        """Extract messages from parent session based on inheritance policy.
+
+        Args:
+            inherit_context: Inheritance mode - "none", "recent", or "all"
+            inherit_context_turns: Number of recent turns to include (for "recent" mode)
+
+        Returns:
+            List of messages to pass to child session, or None if inherit_context is "none"
+        """
+        if inherit_context == "none":
+            return None
+
+        # Get parent's context manager
+        parent_context = self.coordinator.get("context")
+        if not parent_context or not hasattr(parent_context, "get_messages"):
+            logger.debug("No parent context available for inheritance")
+            return None
+
+        try:
+            messages = await parent_context.get_messages()
+            if not messages:
+                return None
+
+            if inherit_context == "all":
+                # Return all messages, sanitized for child consumption
+                return self._sanitize_messages_for_child(messages)
+
+            elif inherit_context == "recent":
+                # Extract last N turns (a turn is a user->assistant exchange)
+                recent_messages = self._extract_recent_turns(
+                    messages, inherit_context_turns
+                )
+                return self._sanitize_messages_for_child(recent_messages)
+
+            return None
+
+        except Exception as e:
+            logger.warning(f"Failed to extract parent messages: {e}")
+            return None
+
+    def _extract_recent_turns(
+        self, messages: list[dict[str, Any]], n_turns: int
+    ) -> list[dict[str, Any]]:
+        """Extract the last N user->assistant turns from messages.
+
+        A "turn" starts with a user message and includes all subsequent messages
+        until the next user message.
+
+        Args:
+            messages: Full message history
+            n_turns: Number of recent turns to extract
+
+        Returns:
+            Messages from the last N turns
+        """
+        if not messages or n_turns <= 0:
+            return []
+
+        # Find indices where user messages start (turn boundaries)
+        turn_starts = [i for i, m in enumerate(messages) if m.get("role") == "user"]
+
+        if not turn_starts:
+            return messages  # No user messages, return all
+
+        if len(turn_starts) <= n_turns:
+            return messages  # Fewer turns than requested, return all
+
+        # Get messages from the nth-to-last turn onwards
+        start_index = turn_starts[-n_turns]
+        return messages[start_index:]
+
+    def _sanitize_messages_for_child(
+        self, messages: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Sanitize messages for safe injection into child session.
+
+        Strips non-essential fields and ensures message format compatibility.
+        Only includes user and assistant messages (skips system/tool messages
+        as those are context-specific to the parent session).
+
+        IMPORTANT: This sanitization handles multiple message formats:
+        1. Anthropic's content block format (content as list with tool_use blocks)
+        2. Amplifier's internal format (tool_calls field at message level)
+        3. Tool result messages (role="tool" or has tool_call_id)
+
+        All tool-related data is stripped since child sessions won't have
+        the matching tool context.
+
+        Args:
+            messages: Raw messages from parent
+
+        Returns:
+            Sanitized messages suitable for child context
+        """
+        sanitized = []
+        for msg in messages:
+            role = msg.get("role")
+
+            # Skip tool result messages entirely (role="tool" in some formats)
+            if role == "tool":
+                continue
+
+            # Skip messages that are tool results (have tool_call_id)
+            if msg.get("tool_call_id"):
+                continue
+
+            # Only pass user and assistant messages - system prompts are
+            # context-specific and shouldn't be inherited
+            if role in ("user", "assistant"):
+                # Skip assistant messages that ONLY contain tool calls
+                # (these are just tool invocations with no meaningful text)
+                if (
+                    role == "assistant"
+                    and msg.get("tool_calls")
+                    and not msg.get("content")
+                ):
+                    continue
+
+                content = msg.get("content", "")
+                sanitized_content = self._sanitize_content(content)
+
+                # Only include message if it has content after sanitization
+                if sanitized_content:
+                    # Create a clean message with ONLY role and content
+                    # Do NOT copy tool_calls or any other fields
+                    sanitized_msg = {"role": role, "content": sanitized_content}
+                    sanitized.append(sanitized_msg)
+        return sanitized
+
+    def _sanitize_content(self, content: Any) -> str | list[dict[str, Any]]:
+        """Sanitize message content, handling both string and list formats.
+
+        Content formats that need to be handled:
+        - A simple string: "Hello, how can I help?"
+        - Anthropic API format: [{"type": "text", "text": "..."}, {"type": "tool_use", ...}]
+        - Amplifier internal format: [{"type": "tool_call", ...}, {"type": "text", ...}]
+
+        This method filters out ALL tool-related blocks and extracts only text content.
+        Tool-related block types to filter:
+        - tool_use (Anthropic's format for tool calls)
+        - tool_call (Amplifier's internal format for tool calls)
+        - tool_result (both Anthropic and Amplifier format for tool results)
+        - thinking (internal reasoning blocks)
+
+        Args:
+            content: Message content (string or list of content blocks)
+
+        Returns:
+            Sanitized content as string (preferred) or list of text blocks
+        """
+        # Handle simple string content
+        if isinstance(content, str):
+            return content
+
+        # Handle list of content blocks
+        if isinstance(content, list):
+            text_parts = []
+            # Types to explicitly filter out (tool-related and internal)
+            filtered_types = {
+                "tool_use",  # Anthropic tool call format
+                "tool_call",  # Amplifier internal tool call format
+                "tool_result",  # Tool results
+                "thinking",  # Internal reasoning blocks
+                "redacted_thinking",  # Redacted thinking blocks
+            }
+
+            for block in content:
+                if isinstance(block, dict):
+                    block_type = block.get("type", "")
+                    # Only keep text blocks, filter out everything else
+                    if block_type == "text":
+                        text = block.get("text", "")
+                        if text:
+                            text_parts.append(text)
+                    elif block_type in filtered_types:
+                        # Explicitly skip these - they're tool or internal blocks
+                        pass
+                    else:
+                        # For unknown types, try to extract any text content
+                        # but log a warning in case we should handle it
+                        logger.debug(
+                            f"Unknown content block type '{block_type}' in message sanitization"
+                        )
+                elif isinstance(block, str):
+                    # Sometimes content blocks can be plain strings
+                    text_parts.append(block)
+
+            # Return as single string if we have text
+            if text_parts:
+                return "\n".join(text_parts)
+
+        # Empty or unrecognized format
+        return ""
 
     def _get_agent_list(self) -> list[dict[str, Any]]:
         """Get list of available agents from mount plan.
@@ -340,6 +550,15 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
             elif self.inherit_hooks is not None:
                 hook_inheritance["inherit_hooks"] = self.inherit_hooks
 
+            # Extract parent messages based on context inheritance policy
+            parent_messages = await self._extract_parent_messages(
+                self.inherit_context, self.inherit_context_turns
+            )
+            if parent_messages:
+                logger.debug(
+                    f"Extracted {len(parent_messages)} parent messages for child session"
+                )
+
             # Spawn sub-session with agent configuration overlay
             result = await spawn_fn(
                 agent_name=agent_name,
@@ -349,6 +568,7 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                 sub_session_id=sub_session_id,
                 tool_inheritance=tool_inheritance,
                 hook_inheritance=hook_inheritance,
+                parent_messages=parent_messages,
             )
 
             # Emit task:agent_completed event
