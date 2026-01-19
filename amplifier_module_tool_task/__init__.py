@@ -29,6 +29,7 @@ Tool Parameters (caller-controlled):
 __amplifier_module_type__ = "tool"
 
 import logging
+import re
 import uuid
 from typing import Any
 
@@ -36,6 +37,29 @@ from amplifier_core import ModuleCoordinator
 from amplifier_core import ToolResult
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_agent_name(name: str) -> str:
+    """Sanitize agent name for filesystem-safe session IDs.
+
+    Agent names like 'foundation:foundation-expert' contain colons which are
+    invalid in Windows filenames. This function replaces non-alphanumeric
+    characters with hyphens to ensure cross-platform compatibility.
+
+    Args:
+        name: Raw agent name (e.g., 'foundation:zen-architect')
+
+    Returns:
+        Sanitized name safe for use in file paths (e.g., 'foundation-zen-architect')
+    """
+    # Convert to lowercase and replace non-alphanumeric with hyphens
+    sanitized = re.sub(r"[^a-z0-9]+", "-", name.lower())
+    # Collapse multiple consecutive hyphens
+    sanitized = re.sub(r"-{2,}", "-", sanitized)
+    # Remove leading/trailing hyphens
+    sanitized = sanitized.strip("-")
+    # Default to "agent" if empty after sanitization
+    return sanitized or "agent"
 
 
 async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = None):
@@ -555,7 +579,10 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
         # Format: {parent-span}-{child-span}_{agent-name}
         # Underscore separator enables streaming UI to parse agent name
         child_span = uuid.uuid4().hex[:16]  # 16-char child span ID
-        sub_session_id = f"{parent_session_id}-{child_span}_{agent_name}"
+        # Sanitize agent name for cross-platform filesystem compatibility
+        # (Windows doesn't allow colons in filenames)
+        sanitized_agent = _sanitize_agent_name(agent_name)
+        sub_session_id = f"{parent_session_id}-{child_span}_{sanitized_agent}"
 
         # Get hooks for error handling (orchestrator will emit tool:pre/post)
         hooks = self.coordinator.get("hooks")
