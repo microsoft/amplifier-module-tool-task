@@ -146,6 +146,27 @@ The input schema uses JSON Schema for validation:
         "session_id": {
             "type": "string",
             "description": "Session ID to resume (from previous spawn/resume response)"
+        },
+        "inherit_context": {
+            "type": "string",
+            "enum": ["none", "recent", "all"],
+            "description": "Context inheritance mode (default: 'none')"
+        },
+        "inherit_context_turns": {
+            "type": "integer",
+            "description": "Number of recent turns to pass when inherit_context is 'recent' (default: 5)"
+        },
+        "provider_preferences": {
+            "type": "array",
+            "description": "Ordered list of provider/model preferences (tries each until available)",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "provider": {"type": "string"},
+                    "model": {"type": "string"}
+                },
+                "required": ["provider", "model"]
+            }
         }
     },
     "required": ["instruction"]
@@ -153,6 +174,25 @@ The input schema uses JSON Schema for validation:
 ```
 
 **Routing**: If `session_id` provided → resume existing sub-session, else → spawn new sub-session with `agent`.
+
+### Provider Preferences
+
+Control which provider/model the spawned agent uses via `provider_preferences`:
+
+```python
+{
+    "agent": "foundation:explorer",
+    "instruction": "Quick analysis task",
+    "provider_preferences": [
+        {"provider": "anthropic", "model": "claude-haiku-*"},
+        {"provider": "openai", "model": "gpt-4o-mini"}
+    ]
+}
+```
+
+- System tries each preference in order until finding an available provider
+- Model names support glob patterns (e.g., `claude-haiku-*` → latest haiku)
+- See [amplifier-foundation](https://github.com/microsoft/amplifier-foundation) for `ProviderPreference` details
 
 **Collection syntax supported**: Agent names can include collection prefixes (e.g., `"developer-expertise:modular-builder"`).
 
