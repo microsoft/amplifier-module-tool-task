@@ -34,6 +34,7 @@ from typing import Any
 
 from amplifier_core import ModuleCoordinator
 from amplifier_core import ToolResult
+from amplifier_foundation import ProviderPreference
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +229,24 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                 "inherit_context_turns": {
                     "type": "integer",
                     "description": "Number of recent turns to pass when inherit_context is 'recent' (default: 5)",
+                },
+                "provider_preferences": {
+                    "type": "array",
+                    "description": "Ordered list of provider/model preferences. System tries each until one is available. Model names support glob patterns (e.g., 'claude-haiku-*').",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "provider": {
+                                "type": "string",
+                                "description": "Provider name (e.g., 'anthropic', 'openai')",
+                            },
+                            "model": {
+                                "type": "string",
+                                "description": "Model name or glob pattern (e.g., 'claude-haiku-*', 'gpt-4o-mini')",
+                            },
+                        },
+                        "required": ["provider", "model"],
+                    },
                 },
             },
             "required": ["instruction"],
@@ -515,6 +534,14 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
         inherit_context = input.get("inherit_context", "none")
         inherit_context_turns = input.get("inherit_context_turns", 5)
 
+        # Provider preferences (caller-controlled) - ordered fallback chain
+        raw_provider_prefs = input.get("provider_preferences", [])
+        provider_preferences = None
+        if raw_provider_prefs:
+            provider_preferences = [
+                ProviderPreference.from_dict(p) for p in raw_provider_prefs
+            ]
+
         # Validate instruction (always required)
         if not instruction:
             return ToolResult(
@@ -639,6 +666,7 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                 tool_inheritance=tool_inheritance,
                 hook_inheritance=hook_inheritance,
                 orchestrator_config=orchestrator_config,
+                provider_preferences=provider_preferences,
             )
 
             # Emit task:agent_completed event
