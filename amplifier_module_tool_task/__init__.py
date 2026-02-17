@@ -544,8 +544,9 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
 
         # Validate instruction (always required)
         if not instruction:
+            error_msg = "Instruction cannot be empty"
             return ToolResult(
-                success=False, error={"message": "Instruction cannot be empty"}
+                success=False, output=error_msg, error={"message": error_msg}
             )
 
         # Get hooks for error handling
@@ -558,18 +559,19 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
 
         # SPAWN MODE: Create new sub-session (requires agent)
         if not agent_name:
+            error_msg = "Agent name required for new delegation (or provide session_id to resume)"
             return ToolResult(
                 success=False,
-                error={
-                    "message": "Agent name required for new delegation (or provide session_id to resume)"
-                },
+                output=error_msg,
+                error={"message": error_msg},
             )
 
         # Check agent exists in registry
         agents = self.coordinator.config.get("agents", {})
         if agent_name not in agents:
+            error_msg = f"Agent '{agent_name}' not found"
             return ToolResult(
-                success=False, error={"message": f"Agent '{agent_name}' not found"}
+                success=False, output=error_msg, error={"message": error_msg}
             )
 
         # Note: Recursion depth limiting not yet implemented
@@ -591,11 +593,11 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
             # Get spawn capability (registered by app layer)
             spawn_fn = self.coordinator.get_capability("session.spawn")
             if spawn_fn is None:
+                error_msg = "Session spawning not available. App layer must register 'session.spawn' capability."
                 return ToolResult(
                     success=False,
-                    error={
-                        "message": "Session spawning not available. App layer must register 'session.spawn' capability."
-                    },
+                    output=error_msg,
+                    error={"message": error_msg},
                 )
 
             # Get parent session from coordinator infrastructure
@@ -704,8 +706,9 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                     },
                 )
 
+            error_msg = f"Delegation failed: {str(e)}"
             return ToolResult(
-                success=False, error={"message": f"Delegation failed: {str(e)}"}
+                success=False, output=error_msg, error={"message": error_msg}
             )
 
     async def _resume_existing_session(
@@ -737,11 +740,11 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
             # Get resume capability (registered by app layer)
             resume_fn = self.coordinator.get_capability("session.resume")
             if resume_fn is None:
+                error_msg = "Session resumption not available. App layer must register 'session.resume' capability."
                 return ToolResult(
                     success=False,
-                    error={
-                        "message": "Session resumption not available. App layer must register 'session.resume' capability."
-                    },
+                    output=error_msg,
+                    error={"message": error_msg},
                 )
 
             # Resume sub-session
@@ -782,11 +785,13 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                         "error": f"Session not found: {str(e)}",
                     },
                 )
+            error_msg = (
+                f"Session '{session_id}' not found. May have expired or never existed."
+            )
             return ToolResult(
                 success=False,
-                error={
-                    "message": f"Session '{session_id}' not found. May have expired or never existed."
-                },
+                output=error_msg,
+                error={"message": error_msg},
             )
 
         except Exception as e:
@@ -801,6 +806,7 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                         "error": str(e),
                     },
                 )
+            error_msg = f"Resume failed: {str(e)}"
             return ToolResult(
-                success=False, error={"message": f"Resume failed: {str(e)}"}
+                success=False, output=error_msg, error={"message": error_msg}
             )
