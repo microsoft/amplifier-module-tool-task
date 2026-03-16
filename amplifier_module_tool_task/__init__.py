@@ -18,7 +18,8 @@ Config Options:
 - inherit_tools: List of tools spawned agents SHOULD receive (mutually exclusive with exclude_tools)
 - exclude_hooks: List of hooks spawned agents should NOT receive (e.g., ["hooks-logging"])
 - inherit_hooks: List of hooks spawned agents SHOULD receive (mutually exclusive with exclude_hooks)
-- max_recursion_depth: Maximum depth for nested delegations (default: 1)
+- max_recursion_depth: Maximum depth for nested delegations (default: 5)
+- timeout: Seconds before a delegation is cancelled (default: 300)
 
 Tool Parameters (caller-controlled):
 - inherit_context: Context inheritance mode - "none" (default), "recent", or "all"
@@ -28,6 +29,7 @@ Tool Parameters (caller-controlled):
 # Amplifier module metadata
 __amplifier_module_type__ = "tool"
 
+import asyncio
 import logging
 import uuid
 from typing import Any
@@ -48,7 +50,8 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
             - inherit_tools: Tools spawned agents SHOULD inherit (mutually exclusive with exclude_tools)
             - exclude_hooks: Hooks spawned agents should NOT inherit (e.g., ["hooks-logging"])
             - inherit_hooks: Hooks spawned agents SHOULD inherit (mutually exclusive with exclude_hooks)
-            - max_recursion_depth: Maximum depth for nested delegations (default: 1)
+            - max_recursion_depth: Maximum depth for nested delegations (default: 5)
+- timeout: Seconds before a delegation is cancelled (default: 300)
 
     Returns:
         None - No cleanup needed for this module
@@ -64,6 +67,7 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
             "task:agent_spawned",  # When agent sub-session spawned
             "task:agent_resumed",  # When agent sub-session resumed
             "task:agent_completed",  # When agent sub-session completed
+            "task:agent_timeout",  # When agent sub-session times out
         ]
     )
     coordinator.register_capability("observability.events", obs_events)
@@ -100,7 +104,8 @@ class TaskTool:
                 - inherit_tools: Tools spawned agents SHOULD inherit
                 - exclude_hooks: Hooks spawned agents should NOT inherit
                 - inherit_hooks: Hooks spawned agents SHOULD inherit
-                - max_recursion_depth: Max delegation depth (default: 1)
+                - max_recursion_depth: Max delegation depth (default: 5)
+                - timeout: Seconds before cancelling a delegation (default: 300)
         """
         self.coordinator = coordinator
         self.config = config
@@ -110,6 +115,9 @@ class TaskTool:
         self.inherit_tools: list[str] | None = config.get(
             "inherit_tools"
         )  # None means inherit all
+
+        self.timeout: float = float(config.get("timeout", 300))  # 5 minutes default
+        self.max_recursion_depth: int = int(config.get("max_recursion_depth", 5))
 
         # Hook inheritance settings (mutually exclusive)
         self.exclude_hooks: list[str] = config.get("exclude_hooks", [])
@@ -228,6 +236,10 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                 "inherit_context_turns": {
                     "type": "integer",
                     "description": "Number of recent turns to pass when inherit_context is 'recent' (default: 5)",
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "Timeout in seconds for the delegated agent (default: 300)",
                 },
             },
             "required": ["instruction"],
@@ -630,16 +642,46 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                 )
 
             # Spawn sub-session with agent configuration overlay
-            result = await spawn_fn(
-                agent_name=agent_name,
-                instruction=effective_instruction,
-                parent_session=parent_session,
-                agent_configs=agents,
-                sub_session_id=sub_session_id,
-                tool_inheritance=tool_inheritance,
-                hook_inheritance=hook_inheritance,
-                orchestrator_config=orchestrator_config,
-            )
+            # Get per-call timeout from input, fall back to config default
+            call_timeout = float(input.get("timeout", self.timeout))
+
+            try:
+                result = await asyncio.wait_for(
+                    spawn_fn(
+                        agent_name=agent_name,
+                        instruction=effective_instruction,
+                        parent_session=parent_session,
+                        agent_configs=agents,
+                        sub_session_id=sub_session_id,
+                        tool_inheritance=tool_inheritance,
+                        hook_inheritance=hook_inheritance,
+                        orchestrator_config=orchestrator_config,
+                    ),
+                    timeout=call_timeout,
+                )
+            except asyncio.TimeoutError:
+                if hooks:
+                    await hooks.emit(
+                        "task:agent_timeout",
+                        {
+                            "agent": agent_name,
+                            "session_id": sub_session_id,
+                            "timeout": call_timeout,
+                            "parent_session_id": parent_session_id,
+                        },
+                    )
+                return ToolResult(
+                    success=False,
+                    error={
+                        "message": (
+                            f"Delegation to '{agent_name}' timed out after {call_timeout}s. "
+                            f"The sub-agent session '{sub_session_id}' may still be running. "
+                            f"Use session_id to resume later if needed."
+                        ),
+                        "code": "DELEGATION_TIMEOUT",
+                        "session_id": sub_session_id,
+                    },
+                )
 
             # Emit task:agent_completed event
             if hooks:
@@ -717,10 +759,39 @@ assistant: "I'm going to use the task tool to launch the greeting-responder agen
                 )
 
             # Resume sub-session
-            result = await resume_fn(
-                sub_session_id=session_id,
-                instruction=instruction,
-            )
+            # Get per-call timeout from config default (resume has no per-call input override)
+            resume_timeout = self.timeout
+
+            try:
+                result = await asyncio.wait_for(
+                    resume_fn(
+                        sub_session_id=session_id,
+                        instruction=instruction,
+                    ),
+                    timeout=resume_timeout,
+                )
+            except asyncio.TimeoutError:
+                if hooks:
+                    await hooks.emit(
+                        "task:agent_timeout",
+                        {
+                            "session_id": session_id,
+                            "timeout": resume_timeout,
+                            "parent_session_id": parent_session_id,
+                        },
+                    )
+                return ToolResult(
+                    success=False,
+                    error={
+                        "message": (
+                            f"Resume of session '{session_id}' timed out after {resume_timeout}s. "
+                            f"The sub-agent session may still be running. "
+                            f"Use session_id to resume later if needed."
+                        ),
+                        "code": "DELEGATION_TIMEOUT",
+                        "session_id": session_id,
+                    },
+                )
 
             # Emit task:agent_completed event
             if hooks:
