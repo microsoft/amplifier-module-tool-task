@@ -173,6 +173,10 @@ The input schema uses JSON Schema for validation:
 }
 ```
 
+Inherited context is serialized as explicitly untrusted historical data before it
+is passed to a child. The child task remains in a separate trusted instruction
+section so parent messages cannot forge task framing.
+
 **Routing**: If `session_id` provided → resume existing sub-session, else → spawn new sub-session with `agent`.
 
 ### Provider Preferences
